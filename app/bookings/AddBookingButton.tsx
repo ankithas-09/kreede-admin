@@ -21,7 +21,7 @@ type AdminBookingBody = {
 };
 
 const COURTS = [1, 2, 3];
-const SLOT_PRICE = 300; // INR per hour for non-members
+const SLOT_PRICE = 500; // INR per hour for non-members
 const SLOT_START_HOUR = 6;   // 6:00
 const SLOT_END_HOUR = 23;    // 23:00 (11pm)
 

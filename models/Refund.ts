@@ -8,8 +8,9 @@ export interface RefundDoc extends mongoose.Document {
   bookingId?: string;
   registrationId?: string;
 
-  userId: string;
-  userEmail: string;
+  // Optional to support guest bookings (no userId/userEmail)
+  userId?: string;
+  userEmail?: string;
   userName?: string;
 
   amount: number;
@@ -53,8 +54,9 @@ const RefundSchema = new Schema<RefundDoc>(
     bookingId: { type: String, index: true },
     registrationId: { type: String, index: true },
 
-    userId: { type: String, required: true, index: true },
-    userEmail: { type: String, required: true, lowercase: true, index: true },
+    // Not required (but still indexed for lookups)
+    userId: { type: String, index: true },
+    userEmail: { type: String, lowercase: true, index: true },
     userName: { type: String },
 
     amount: { type: Number, required: true },
