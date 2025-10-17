@@ -1,12 +1,10 @@
 // app/bookings/page.tsx
 import { BookingModel } from "@/models/Booking";
-import { GuestBookingModel } from "@/models/GuestBooking";
 import CancelButton from "./CancelButton";
 import MarkPaidButton from "./MarkPaidButton";
-import AddBookingButton from "./AddBookingButton";
 
 type SearchParams = {
-  q?: string;   // search by name/email (for guest, only name)
+  q?: string;   // search by name/email
   date?: string; // YYYY-MM-DD
 };
 
@@ -26,31 +24,18 @@ type BookingLean = {
   slots?: Array<{ courtId?: number; start?: string; end?: string }>;
   amount?: number;
   currency?: string;
-  paymentRef?: string;   // e.g., "CASH" | "MEMBERSHIP" | "ONLINE"
-  adminPaid?: boolean;   // for admin-created
-  createdAt?: Date | string;
-};
-
-type GuestBookingLean = {
-  _id: string | { toString?: () => string };
-  userName?: string;     // guest name
-  date?: string;
-  slots?: Array<{ courtId?: number; start?: string; end?: string }>;
-  amount?: number;
-  currency?: string;
-  paymentRef?: string;   // "UNPAID.CASH" | "PAID.CASH"
-  adminPaid?: boolean;   // for display guard
+  paymentRef?: string;   // e.g., "CASH" | "MEMBERSHIP" | "ONLINE" | "PAID.CASH" | "UNPAID.CASH"
+  adminPaid?: boolean;   // true -> PAID.<ref>, false -> UNPAID.<ref>
   createdAt?: Date | string;
 };
 
 export default async function BookingsPage({ searchParams }: { searchParams: SearchParams }) {
   const Booking = await BookingModel();
-  const GuestBooking = await GuestBookingModel();
 
   const q = (searchParams.q || "").trim();
   const date = (searchParams.date || "").trim();
 
-  // Build query for normal bookings
+  // Build Mongo query
   const query: MongoQuery = {};
   if (q) {
     query.$or = [
@@ -60,7 +45,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
   }
   if (date) query.date = date;
 
-  // Fetch standard bookings
+  // Fetch bookings (newest first) including amount/currency/paymentRef/adminPaid
   const bookings = (await Booking.find(query)
     .select({
       userName: 1,
@@ -76,27 +61,6 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     .sort({ createdAt: -1 })
     .lean()) as BookingLean[];
 
-  // Fetch guest bookings (search only by name + date)
-  const guestQuery: { $or?: Array<{ userName: { $regex: string; $options: string } }>; date?: string } = {};
-  if (q) {
-    guestQuery.$or = [{ userName: { $regex: q, $options: "i" } }];
-  }
-  if (date) guestQuery.date = date;
-
-  const guestBookings = (await GuestBooking.find(guestQuery)
-    .select({
-      userName: 1,
-      date: 1,
-      slots: 1,
-      amount: 1,
-      currency: 1,
-      paymentRef: 1,
-      adminPaid: 1,
-      createdAt: 1,
-    })
-    .sort({ createdAt: -1 })
-    .lean()) as GuestBookingLean[];
-
   type Row = {
     bookingId: string;
     userName: string;
@@ -110,15 +74,12 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     start: string;
     end: string;
     slotIndex: number;
-    createdAt: number; // for merged sorting desc
   };
 
-  const toIdString = (v: string | { toString?: () => string }) =>
+  const toIdString = (v: BookingLean["_id"]) =>
     typeof v === "string" ? v : v?.toString?.() || "";
 
   const rows: Row[] = [];
-
-  // Normal bookings → rows
   for (const b of bookings) {
     const base = {
       bookingId: toIdString(b._id),
@@ -129,10 +90,9 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
       currency: b.currency || undefined,
       paymentRef: b.paymentRef || undefined,
       adminPaid: b.adminPaid === true,
-      createdAt: new Date(b.createdAt ?? Date.now()).getTime(),
     };
     if (Array.isArray(b.slots) && b.slots.length) {
-      b.slots.forEach((s, idx) => {
+      b.slots.forEach((s, idx: number) => {
         rows.push({
           ...base,
           courtId: typeof s?.courtId === "number" ? s.courtId : null,
@@ -146,39 +106,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     }
   }
 
-  // Guest bookings → rows (no email)
-  for (const g of guestBookings) {
-    const isPaid = String(g.paymentRef || "").toUpperCase().startsWith("PAID.");
-    const base = {
-      bookingId: toIdString(g._id),
-      userName: g.userName || "—",
-      userEmail: "—",
-      date: g.date || "—",
-      amount: typeof g.amount === "number" ? g.amount : null,
-      currency: g.currency || undefined,
-      paymentRef: g.paymentRef || undefined, // "UNPAID.CASH" | "PAID.CASH"
-      adminPaid: isPaid,                      // for button visibility
-      createdAt: new Date(g.createdAt ?? Date.now()).getTime(),
-    };
-    if (Array.isArray(g.slots) && g.slots.length) {
-      g.slots.forEach((s, idx) => {
-        rows.push({
-          ...base,
-          courtId: typeof s?.courtId === "number" ? s.courtId : null,
-          start: s?.start || "—",
-          end: s?.end || "—",
-          slotIndex: idx,
-        });
-      });
-    } else {
-      rows.push({ ...base, courtId: null, start: "—", end: "—", slotIndex: -1 });
-    }
-  }
-
-  // Sort merged rows newest first (by createdAt desc)
-  rows.sort((a, b) => b.createdAt - a.createdAt);
-
-  // Export URL with current filters (still only standard bookings are exported)
+  // Export URL with current filters
   const params = new URLSearchParams();
   if (q) params.set("q", q);
   if (date) params.set("date", date);
@@ -187,29 +115,13 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
   const amountDisplay = (a: number | null, cur?: string) =>
     a == null ? "—" : `${cur ? cur + " " : ""}${a}`;
 
-  // Robust payment badge:
-  // - If ref already like "UNPAID.CASH"/"PAID.CASH", show as-is and color by prefix
-  // - If ref is "MEMBERSHIP", always PAID.MEMBERSHIP
-  // - Else show UNPAID.<REF> or PAID.<REF> based on adminPaid
+  // ✅ Normalize paymentRef and infer paid state from adminPaid OR "PAID." prefix in the ref.
+  // This ensures guest bookings created with "Create & Mark Paid" (paymentRef="PAID.CASH") show as PAID.CASH.
   const paymentBadge = (paid?: boolean, ref?: string) => {
-    const refUpper = (ref || "").toUpperCase().trim();
-    const hasPrefix = refUpper.startsWith("UNPAID.") || refUpper.startsWith("PAID.");
-    let text: string;
-    let isPaid: boolean;
-
-    if (hasPrefix) {
-      text = refUpper;
-      isPaid = refUpper.startsWith("PAID.");
-    } else if (refUpper === "MEMBERSHIP") {
-      text = "PAID.MEMBERSHIP";
-      isPaid = true;
-    } else if (refUpper) {
-      isPaid = paid === true;
-      text = `${isPaid ? "PAID" : "UNPAID"}.${refUpper}`;
-    } else {
-      isPaid = paid === true;
-      text = isPaid ? "PAID" : "UNPAID";
-    }
+    const raw = (ref || "").toUpperCase().trim();
+    const normalizedRef = raw.replace(/^PAID\./, "").replace(/^UNPAID\./, "");
+    const isPaid = paid === true || raw.startsWith("PAID.");
+    const text = `${isPaid ? "PAID" : "UNPAID"}${normalizedRef ? `.${normalizedRef}` : ""}`;
 
     return (
       <span
@@ -236,7 +148,6 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <AddBookingButton />
           <a href="/dashboard" className="btn" style={{ background: "#fff", border: "1px solid rgba(17,17,17,0.12)" }}>
             ← Back to Dashboard
           </a>
