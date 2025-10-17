@@ -1,13 +1,19 @@
+// app/api/auth/signin/route.ts
 import { NextResponse } from "next/server";
-import { dbConnect } from "@/lib/db";
-import { Admin } from "@/models/Admin";
-import { signinSchema } from "@/lib/validators";
 import bcrypt from "bcryptjs";
+import { signinSchema } from "@/lib/validators";
 import { signJwt } from "@/lib/auth";
+import { AdminModel } from "@/models/Admin";
+
+type AdminLean = {
+  _id: unknown;
+  name: string;
+  email: string;
+  passwordHash: string;
+};
 
 export async function POST(req: Request) {
   try {
-    await dbConnect();
     const json = await req.json();
     const parsed = signinSchema.safeParse(json);
     if (!parsed.success) {
@@ -15,13 +21,29 @@ export async function POST(req: Request) {
     }
 
     const { email, password } = parsed.data;
-    const admin = await Admin.findOne({ email });
-    if (!admin) return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+
+    // Use the scoped Admin model (per-DB connection)
+    const Admin = await AdminModel();
+
+    // Lean object is fine here (we just read fields)
+    const admin = await Admin.findOne({ email })
+      .select({ name: 1, email: 1, passwordHash: 1 })
+      .lean<AdminLean | null>();
+
+    if (!admin) {
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+    }
 
     const ok = await bcrypt.compare(password, admin.passwordHash);
-    if (!ok) return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+    if (!ok) {
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+    }
 
-    const token = signJwt({ sub: admin._id.toString(), email: admin.email, name: admin.name });
+    const token = signJwt({
+      sub: String(admin._id),
+      email: admin.email,
+      name: admin.name,
+    });
 
     const res = NextResponse.json({ ok: true });
     res.cookies.set("auth", token, {
@@ -33,7 +55,7 @@ export async function POST(req: Request) {
     });
     return res;
   } catch (e) {
-    console.error(e);
+    console.error("signin error:", e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }

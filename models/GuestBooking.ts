@@ -1,0 +1,60 @@
+// models/GuestBooking.ts
+import type mongoose from "mongoose";
+import { Schema } from "mongoose";
+import { getDb } from "@/lib/db";
+
+export interface GuestBookingDoc extends mongoose.Document {
+  orderId?: string;
+  userName?: string;
+
+  date: string; // YYYY-MM-DD
+  slots: { courtId: number; start: string; end: string }[];
+
+  amount: number;
+  currency: string;        // "INR"
+  status: "PAID";          // matches your admin flow
+  paymentRef: "CASH" | "UNPAID.CASH"; // allow pending cash
+  adminPaid?: boolean;     // false when pending, true after mark-paid
+
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const SlotSchema = new Schema(
+  {
+    courtId: { type: Number, required: true },
+    start:   { type: String, required: true }, // "HH:MM"
+    end:     { type: String, required: true }, // "HH:MM"
+  },
+  { _id: false }
+);
+
+const GuestBookingSchema = new Schema<GuestBookingDoc>(
+  {
+    orderId:    { type: String, index: true }, // unique when present
+    userName:   { type: String },
+
+    date:       { type: String, required: true, index: true },
+    slots:      { type: [SlotSchema], default: [] },
+
+    amount:     { type: Number, required: true, default: 0 },
+    currency:   { type: String, default: "INR" },
+
+    status:     { type: String, enum: ["PAID"], default: "PAID" },
+    paymentRef: { type: String, enum: ["CASH", "UNPAID.CASH"], required: true },
+    adminPaid:  { type: Boolean, default: false },
+  },
+  { collection: "guest_bookings", timestamps: true, strict: true }
+);
+
+// make orderId unique only if it's a string (admin-created always has one)
+GuestBookingSchema.index(
+  { orderId: 1 },
+  { unique: true, partialFilterExpression: { orderId: { $type: "string" } } }
+);
+
+export async function GuestBookingModel() {
+  const db = await getDb("kreede_booking");
+  return (db.models.GuestBooking as mongoose.Model<GuestBookingDoc>) ||
+         db.model<GuestBookingDoc>("GuestBooking", GuestBookingSchema);
+}

@@ -1,5 +1,5 @@
 // lib/db.ts
-import mongoose, { Connection } from "mongoose";
+import mongoose, { type Connection } from "mongoose";
 
 const MONGODB_URI = process.env.MONGODB_URI as string;
 if (!MONGODB_URI) throw new Error("MONGODB_URI is not set in .env.local");
@@ -12,37 +12,51 @@ type ConnCache = {
   promises: Record<string, Promise<Connection> | null>;
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const g = global as any;
+const g = globalThis as unknown as { __dbConnCache?: ConnCache };
 if (!g.__dbConnCache) {
-  g.__dbConnCache = { conns: {}, promises: {} } as ConnCache;
+  g.__dbConnCache = { conns: {}, promises: {} };
 }
-const cache: ConnCache = g.__dbConnCache;
+const cache = g.__dbConnCache;
 
 /**
  * Get a dedicated connection to a DB (default "kreede").
  * Uses mongoose.createConnection so models are scoped per-DB.
  */
 export async function getDb(dbName = "kreede"): Promise<Connection> {
-  if (cache.conns[dbName]) return cache.conns[dbName]!;
+  const cachedConn = cache.conns[dbName];
+  if (cachedConn) return cachedConn;
+
   if (!cache.promises[dbName]) {
-    cache.promises[dbName] = mongoose
-      .createConnection(MONGODB_URI, {
-        dbName,
-        maxPoolSize: 10,
-        serverSelectionTimeoutMS: 15000,
-        connectTimeoutMS: 15000,
-      })
-      .asPromise();
+    const conn = mongoose.createConnection(MONGODB_URI, {
+      dbName,
+      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 15_000,
+      connectTimeoutMS: 15_000,
+      socketTimeoutMS: 45_000,
+      maxConnecting: 3,
+      bufferCommands: false, // ← fail fast instead of buffering ops
+    });
+
+    // Optional: lightweight logging (safe to keep, remove if noisy)
+    conn.on("error", (err) => {
+      // eslint-disable-next-line no-console
+      console.error(`[mongo:${dbName}] connection error:`, err);
+    });
+    conn.on("connected", () => {
+      // eslint-disable-next-line no-console
+      console.log(`[mongo:${dbName}] connected`);
+    });
+
+    cache.promises[dbName] = conn.asPromise().then(() => conn);
   }
-  const conn = await cache.promises[dbName]!;
-  cache.conns[dbName] = conn;
-  return conn;
+
+  const resolved = await cache.promises[dbName]!;
+  cache.conns[dbName] = resolved;
+  return resolved;
 }
 
 /**
- * For legacy places where you used `dbConnect()` as a single default connection.
- * This simply returns the "kreede" connection.
+ * Legacy helper returning the "kreede" connection.
  */
 export async function dbConnect(): Promise<Connection> {
   return getDb("kreede");

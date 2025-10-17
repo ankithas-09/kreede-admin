@@ -1,6 +1,7 @@
 // app/api/bookings/[id]/mark-paid/route.ts
 import { NextResponse } from "next/server";
 import { BookingModel } from "@/models/Booking";
+import { GuestBookingModel } from "@/models/GuestBooking";
 
 type PaidDoc = {
   _id: string;
@@ -15,22 +16,35 @@ export async function PATCH(
     const id = params?.id;
     if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
-    const Booking = await BookingModel();
-
-    const doc = await Booking.findById(id)
-      .select({ _id: 1, adminPaid: 1 })
-      .lean<PaidDoc>();
-
-    if (!doc) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
-
-    if (doc.adminPaid === true) {
-      // Already paid → idempotent success
-      return NextResponse.json({ ok: true, already: true });
+    // Try regular bookings first
+    {
+      const Booking = await BookingModel();
+      const found = await Booking.findById(id).select({ _id: 1, adminPaid: 1 }).lean<PaidDoc | null>();
+      if (found) {
+        if (found.adminPaid === true) {
+          // idempotent success
+          return NextResponse.json({ ok: true, already: true, source: "bookings" });
+        }
+        await Booking.updateOne({ _id: id }, { $set: { adminPaid: true } });
+        return NextResponse.json({ ok: true, source: "bookings" });
+      }
     }
 
-    await Booking.updateOne({ _id: id }, { $set: { adminPaid: true } });
+    // If not in bookings, try guest_bookings
+    {
+      const GuestBooking = await GuestBookingModel();
+      const foundGuest = await GuestBooking.findById(id).select({ _id: 1, adminPaid: 1 }).lean<PaidDoc | null>();
+      if (foundGuest) {
+        if (foundGuest.adminPaid === true) {
+          // idempotent success
+          return NextResponse.json({ ok: true, already: true, source: "guest_bookings" });
+        }
+        await GuestBooking.updateOne({ _id: id }, { $set: { adminPaid: true } });
+        return NextResponse.json({ ok: true, source: "guest_bookings" });
+      }
+    }
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ error: "Booking not found" }, { status: 404 });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Server error";
     console.error("mark-paid error:", e);

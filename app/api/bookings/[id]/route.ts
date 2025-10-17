@@ -1,10 +1,10 @@
 // app/api/bookings/[id]/route.ts
 import { NextResponse } from "next/server";
 import { BookingModel, type BookingDoc } from "@/models/Booking";
+import { GuestBookingModel, type GuestBookingDoc } from "@/models/GuestBooking";
 import { RefundModel } from "@/models/Refund";
 
 /* ---------------- Cashfree helpers ---------------- */
-
 function cashfreeBase() {
   const env = (process.env.CASHFREE_ENV || "sandbox").toLowerCase();
   return env === "production" ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg";
@@ -48,12 +48,10 @@ async function createCashfreeRefund(params: { orderId: string; amount: number; n
   const data: unknown = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    // Try to read a reasonable message from the returned payload
     const message =
       (typeof data === "object" && data && "message" in data && String((data as Record<string, unknown>).message)) ||
       (typeof data === "object" && data && "error" in data && String((data as Record<string, unknown>).error)) ||
       `Cashfree refund failed (HTTP ${res.status})`;
-
     const err = new Error(message) as Error & { status?: number; data?: unknown };
     err.status = res.status;
     err.data = data;
@@ -76,7 +74,6 @@ async function createCashfreeRefund(params: { orderId: string; amount: number; n
 }
 
 /* ---------------- Mapping helpers ---------------- */
-
 function toLegacyRefundStatus(cf: string): "REFUND_SUCCESS" | "REFUND_FAILED" | "PENDING" {
   const up = cf.toUpperCase();
   if (up.includes("SUCCESS")) return "REFUND_SUCCESS";
@@ -90,14 +87,22 @@ function toUnifiedStatus(cf: string): "SUCCESS" | "FAILED" | "PENDING" {
   return "PENDING";
 }
 
-/* ---------------- Types for lean booking shape ---------------- */
+/* ---------------- Helpers ---------------- */
+function isNonGatewayBooking(b: { amount?: number; paymentRef?: string; orderId?: string } | null | undefined): boolean {
+  const amount  = Number(b?.amount ?? 0);
+  const ref     = String(b?.paymentRef ?? "").toUpperCase();
+  const orderId = String(b?.orderId ?? "");
+  return amount <= 0 || ref === "MEMBERSHIP" || ref === "CASH" || !orderId || orderId.startsWith("admin_");
+}
 
 type BookingLean = Pick<
   BookingDoc,
   "_id" | "orderId" | "userId" | "userEmail" | "userName" | "amount" | "currency" | "paymentRef" | "date" | "slots"
 > & { _id: string };
-
-/* ---------------- DELETE: cancel entire booking ---------------- */
+type GuestLean = Pick<
+  GuestBookingDoc,
+  "_id" | "orderId" | "userName" | "amount" | "currency" | "paymentRef" | "date" | "slots"
+> & { _id: string };
 
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   try {
@@ -105,60 +110,57 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
     const Booking = await BookingModel();
+    const GuestBooking = await GuestBookingModel();
     const Refund = await RefundModel();
 
     const booking = await Booking.findById(id)
-      .select({
-        orderId: 1,
-        userId: 1,
-        userEmail: 1,
-        userName: 1,
-        amount: 1,
-        currency: 1,
-        paymentRef: 1, // e.g. "MEMBERSHIP"
-        date: 1,
-        slots: 1,
-      })
+      .select({ orderId: 1, userId: 1, userEmail: 1, userName: 1, amount: 1, currency: 1, paymentRef: 1, date: 1, slots: 1 })
       .lean<BookingLean | null>();
 
-    if (!booking) {
+    const guest = booking
+      ? null
+      : await GuestBooking.findById(id)
+          .select({ orderId: 1, userName: 1, amount: 1, currency: 1, paymentRef: 1, date: 1, slots: 1 })
+          .lean<GuestLean | null>();
+
+    if (!booking && !guest) {
       return NextResponse.json({ error: "Booking not found" }, { status: 404 });
     }
 
-    const rawAmount = Number(booking.amount);
-    const amount = Number.isFinite(rawAmount) ? Math.max(0, rawAmount) : 0;
-    const currency = booking.currency || "INR";
-    const orderId = String(booking.orderId || "");
-    const paymentRef = String(booking.paymentRef || "");
+    const doc = (booking ?? guest)!;
+    const isGuest = !!guest;
 
-    // Membership / free booking: no gateway refund
-    if (!orderId || amount <= 0 || paymentRef.toUpperCase() === "MEMBERSHIP") {
+    const rawAmount = Number(doc.amount);
+    const amount = Number.isFinite(rawAmount) ? Math.max(0, rawAmount) : 0;
+    const currency = doc.currency || "INR";
+    const orderId = String(doc.orderId || "");
+
+    // Direct cancel path (admin/member/guest)
+    if (isNonGatewayBooking(doc)) {
       await Refund.create({
-        kind: "booking_slot", // ✅ matches Refund schema enum
-        bookingId: String(booking._id),
-        userId: String(booking.userId || ""),
-        userEmail: String(booking.userEmail || ""),
-        userName: String(booking.userName || ""),
-        amount, // likely 0
+        kind: "booking_slot",
+        bookingId: String(doc._id),
+        userId: booking ? String(booking.userId || "") : undefined,
+        userEmail: booking ? String(booking.userEmail || "") : undefined,
+        userName: booking ? String(booking.userName || "") : (guest ? guest.userName : ""),
+        amount,
         currency,
-        reason: paymentRef.toUpperCase() === "MEMBERSHIP" ? "Membership booking cancel" : "No payment captured",
-        orderId: orderId || undefined,
-        refundId: undefined,
-        cfRefundId: undefined,
-        cfPaymentId: undefined,
-        refundStatus: "NO_REFUND_REQUIRED", // ✅ legacy field
-        status: "NO_REFUND_REQUIRED", // ✅ unified field used by UI
-        statusDescription: "No payment associated with this booking",
+        reason: isGuest ? "Guest booking cancel (offline refund)" : "Admin/membership booking cancel",
+        orderId,
+        refundStatus: "NO_REFUND_REQUIRED",
+        status: "NO_REFUND_REQUIRED",
+        statusDescription: "No payment gateway refund required",
         gateway: "NONE",
         meta: {
-          paymentRef,
-          date: booking.date as unknown as string, // shape preserved; no logic change
-          slots: booking.slots as unknown as string[],
+          isGuest,
+          date: (doc as { date?: string }).date,
+          slots: (doc as { slots?: unknown[] }).slots,
           mode: "full_booking_cancel",
         },
       });
 
-      await Booking.findByIdAndDelete(id);
+      if (booking) await Booking.findByIdAndDelete(id);
+      else await GuestBooking.findByIdAndDelete(id);
 
       return NextResponse.json({
         ok: true,
@@ -170,23 +172,22 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
       });
     }
 
-    // Paid booking → attempt Cashfree refund for full amount
+    // Customer online booking → Cashfree refund
     const cf = await createCashfreeRefund({
       orderId,
-      amount, // must be > 0 here
+      amount, // full
       note: `Admin cancel booking ${id}`,
     });
 
     const legacy = toLegacyRefundStatus(cf.refundStatus);
     const unified = toUnifiedStatus(cf.refundStatus);
 
-    // Record the refund attempt/result first
     await Refund.create({
-      kind: "booking_slot", // ✅ uses allowed enum
-      bookingId: String(booking._id),
-      userId: String(booking.userId || ""),
-      userEmail: String(booking.userEmail || ""),
-      userName: String(booking.userName || ""),
+      kind: "booking_slot",
+      bookingId: String(doc._id),
+      userId: booking ? String(booking.userId || "") : undefined,
+      userEmail: booking ? String(booking.userEmail || "") : undefined,
+      userName: booking ? String(booking.userName || "") : undefined,
       amount,
       currency,
       reason: "Admin cancel (full booking)",
@@ -194,25 +195,24 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
       cfRefundId: cf.cfRefundId,
       cfPaymentId: cf.cfPaymentId,
       orderId,
-      refundStatus: legacy, // ✅ matches schema enum
-      status: unified, // ✅ new normalized field
+      refundStatus: legacy,
+      status: unified,
       statusDescription: cf.statusDescription,
       gateway: "CASHFREE",
       meta: {
         raw: cf.raw,
-        date: booking.date as unknown as string,
-        slots: booking.slots as unknown as string[],
+        date: (doc as { date?: string }).date,
+        slots: (doc as { slots?: unknown[] }).slots,
         mode: "full_booking_cancel",
       },
     });
 
-    // If Cashfree didn’t accept (e.g., FAILED), keep the booking for manual follow-up.
     if (legacy === "REFUND_FAILED") {
       return NextResponse.json({ error: "Cashfree refund failed", details: cf.raw }, { status: 502 });
     }
 
-    // For SUCCESS or PENDING we remove the booking (your earlier behavior)
-    await Booking.findByIdAndDelete(id);
+    if (booking) await Booking.findByIdAndDelete(id);
+    else await GuestBooking.findByIdAndDelete(id);
 
     return NextResponse.json({
       ok: true,
@@ -225,38 +225,11 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
       cfPaymentId: cf.cfPaymentId,
     });
   } catch (e: unknown) {
-    // Preserve your original behavior: read message, data, and status if present
     const errObj = e as { message?: string; status?: number; data?: unknown };
     const status = typeof errObj?.status === "number" ? errObj.status : 500;
     const message = typeof errObj?.message === "string" ? errObj.message : "Server error";
     const details = errObj?.data;
     console.error("Cancel booking error:", e);
     return NextResponse.json({ error: message, details }, { status });
-  }
-}
-
-/* ---------------- (Optional) PATCH: mark booking as PAID ---------------- */
-
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
-  try {
-    const id = params?.id;
-    if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
-
-    const body = (await req.json().catch(() => ({}))) as { action?: string };
-    const action = String(body.action || "").toLowerCase();
-
-    if (action !== "markpaid") {
-      return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
-    }
-
-    const Booking = await BookingModel();
-    const doc = await Booking.findByIdAndUpdate(id, { $set: { status: "PAID" } }, { new: true }).lean<BookingDoc | null>();
-    if (!doc) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
-
-    return NextResponse.json({ ok: true });
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Server error";
-    console.error("PATCH booking error:", e);
-    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -76,7 +76,7 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
   const ids = users.map((u) => toIdString(u._id));
   const emails = users
     .map((u) => (u.email || "").toLowerCase())
-  .filter((e): e is string => Boolean(e));
+    .filter((e): e is string => Boolean(e));
   const names = users
     .map((u) => (u.name || "").trim())
     .filter((n): n is string => Boolean(n));
@@ -124,6 +124,12 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
     const isActive = m.status === "PAID" && now < end;
     return { ...m, start, end, isActive };
   }
+
+  // Only show users who have PURCHASED a membership (latest status === "PAID")
+  const usersWithPaidMembership = users.filter((u) => {
+    const m = latestFor(u);
+    return !!m && m.status === "PAID";
+  });
 
   // Export URL
   const params = new URLSearchParams();
@@ -199,18 +205,18 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => {
-                const m = latestFor(u);
+              {usersWithPaidMembership.map((u) => {
+                const m = latestFor(u)!; // guaranteed non-null by the filter above
                 const plan = m ? (m.planName || m.planId || "—") : "—";
                 const amount =
-                  m && typeof m.amount === "number"
+                  typeof m.amount === "number"
                     ? `${m.currency || ""} ${m.amount}`.trim()
-                    : typeof m?.amount === "string"
+                    : typeof m.amount === "string"
                     ? `${m.currency || ""} ${m.amount}`.trim()
                     : "—";
                 const start = m ? fmtDate(m.start) : "—";
                 const end = m ? fmtDate(m.end) : "—";
-                const status = m ? (m.isActive ? "ACTIVE" : (m.status || "—")) : "NO MEMBERSHIP";
+                const status = m ? (m.isActive ? "ACTIVE" : (m.status || "—")) : "—";
 
                 return (
                   <tr key={toIdString(u._id)}>
@@ -226,10 +232,10 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
                 );
               })}
 
-              {users.length === 0 && (
+              {usersWithPaidMembership.length === 0 && (
                 <tr>
                   <td colSpan={9} style={{ textAlign: "center", padding: "18px" }}>
-                    No users{q ? ` for “${q}”` : ""}.
+                    No members with purchased memberships{q ? ` for “${q}”` : ""}.
                   </td>
                 </tr>
               )}

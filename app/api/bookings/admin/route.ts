@@ -1,12 +1,12 @@
 // app/api/bookings/admin/route.ts
 import { NextResponse } from "next/server";
 import { BookingModel } from "@/models/Booking";
+import { GuestBookingModel } from "@/models/GuestBooking";
 import { MembershipModel } from "@/models/Membership";
 
 const SLOT_PRICE = 500; // INR per slot for non-members
 
 function genAdminOrderId() {
-  // unique, human-readable order id for admin-created bookings
   return `admin_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
@@ -28,10 +28,10 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json().catch(() => ({}))) as AdminCreateBody;
     const {
-      type,               // "member" | "user" | "guest"
-      date,               // YYYY-MM-DD
-      slots,              // [{ courtId, start, end }]
-      markPaid,           // boolean (admin pressed Paid button)
+      type,
+      date,
+      slots,
+      markPaid,
       userId,
       userName,
       userEmail,
@@ -56,37 +56,58 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Guest name and phone are required" }, { status: 400 });
     }
 
+    // ---- models ----
     const Booking = await BookingModel();
+    const GuestBooking = await GuestBookingModel();
 
     // ---- billing ----
     const totalAmount = isMember ? 0 : Number(slots.length * SLOT_PRICE);
     const currency = "INR";
 
-    // adminPaid: members and "Create & Mark Paid" => true; "Create (Pending)" => false
+    // adminPaid: members + “Create & Mark Paid” => true; “Create (Pending)” => false
     const adminPaid = isMember ? true : !!markPaid;
 
-    // paymentRef: MEMBERSHIP for members; otherwise CASH (admin handled)
-    const paymentRef = isMember ? "MEMBERSHIP" : "CASH";
+    // paymentRef:
+    // - Member: MEMBERSHIP
+    // - Non-member (user/guest): CASH if markPaid, else UNPAID.CASH
+    const paymentRef =
+      isMember ? "MEMBERSHIP" : (markPaid ? "CASH" : "UNPAID.CASH");
 
-    // ✅ Always set a unique orderId for admin-created bookings to avoid E11000 on null
+    // Always set a unique orderId for admin-created bookings
     const orderId = genAdminOrderId();
 
-    // ---- create booking ----
+    // ---- create booking in the correct collection ----
+    if (isGuest) {
+      const created = await GuestBooking.create({
+        orderId,
+        userName: guestName || "Guest",
+        date,
+        slots,
+        amount: totalAmount,
+        currency,
+        status: "PAID",        // schema expects PAID; we use adminPaid to reflect unpaid UI state
+        paymentRef,            // "UNPAID.CASH" when pending
+        adminPaid,             // false when pending
+      });
+      return NextResponse.json({ ok: true, id: String(created._id) });
+    }
+
+    // regular (member/user) bookings go to main bookings collection
     const created = await Booking.create({
       orderId,
-      userId:   isGuest ? undefined : (userId || undefined),
-      userName: isGuest ? (guestName || "Guest") : (userName || "—"),
-      userEmail:isGuest ? undefined : (userEmail ? String(userEmail).toLowerCase() : undefined),
+      userId:   isMember ? (userId || undefined) : (isUser ? userId || undefined : undefined),
+      userName: userName || (isMember ? "—" : "—"),
+      userEmail: (userEmail ? String(userEmail).toLowerCase() : undefined),
       date,
       slots,
       amount:   totalAmount,
       currency,
-      status:   "PAID",     // stored as PAID as per your requirement
-      paymentRef,
-      adminPaid,            // admin-visible flag (true if marked paid)
+      status:   "PAID",        // stored as PAID; adminPaid governs paid/unpaid in UI
+      paymentRef,              // "CASH" or "UNPAID.CASH" for non-members
+      adminPaid,               // false when pending
     });
 
-    // ---- members: increment gamesUsed by number of slots ----
+    // Members: consume credits = number of slots
     if (isMember && userId) {
       const Membership = await MembershipModel();
       await Membership.updateOne(

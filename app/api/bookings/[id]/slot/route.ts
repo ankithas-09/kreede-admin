@@ -1,16 +1,15 @@
 // app/api/bookings/[id]/slot/route.ts
 import { NextResponse } from "next/server";
 import { BookingModel, type BookingDoc } from "@/models/Booking";
+import { GuestBookingModel, type GuestBookingDoc } from "@/models/GuestBooking";
 import { RefundModel } from "@/models/Refund";
 import { MembershipModel } from "@/models/Membership";
 
 /* ---------------- Cashfree helpers ---------------- */
-
 function cashfreeBase() {
   const env = (process.env.CASHFREE_ENV || "sandbox").toLowerCase();
   return env === "production" ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg";
 }
-
 type CashfreeCreatedRefund = {
   refundId: string;
   refundStatus: string;
@@ -19,7 +18,6 @@ type CashfreeCreatedRefund = {
   statusDescription: string;
   raw: unknown;
 };
-
 async function createCashfreeRefund(params: { orderId: string; amount: number; note?: string }): Promise<CashfreeCreatedRefund> {
   const appId = process.env.CASHFREE_APP_ID;
   const secretKey = process.env.CASHFREE_SECRET_KEY;
@@ -73,8 +71,6 @@ async function createCashfreeRefund(params: { orderId: string; amount: number; n
     raw: data,
   };
 }
-
-// GET refund status (preferred + fallback)
 async function fetchCashfreeRefundStatus(orderId: string, refundId: string): Promise<string> {
   const appId = process.env.CASHFREE_APP_ID;
   const secretKey = process.env.CASHFREE_SECRET_KEY;
@@ -118,26 +114,26 @@ async function fetchCashfreeRefundStatus(orderId: string, refundId: string): Pro
 
   return "PENDING";
 }
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/* ---------------- Utility helpers ---------------- */
-
+/* ---------------- Helpers ---------------- */
 type Slot = { courtId: number; start: string; end: string };
-
 type BookingLean = Pick<
   BookingDoc,
   "_id" | "orderId" | "userId" | "userEmail" | "userName" | "amount" | "currency" | "paymentRef" | "date" | "slots"
 > & { _id: string; slots: Slot[] | unknown[] };
+type GuestLean = Pick<
+  GuestBookingDoc,
+  "_id" | "orderId" | "userName" | "amount" | "currency" | "paymentRef" | "date" | "slots"
+> & { _id: string; slots: Slot[] | unknown[] };
 
-function isMembershipBooking(b: { amount?: number; paymentRef?: string; orderId?: string } | null | undefined): boolean {
-  const amount = Number(b?.amount ?? 0);
-  const pr = String(b?.paymentRef ?? "").toUpperCase();
+function isNonGatewayBooking(b: { amount?: number; paymentRef?: string; orderId?: string } | null | undefined): boolean {
+  const amount  = Number(b?.amount ?? 0);
+  const ref     = String(b?.paymentRef ?? "").toUpperCase();
   const orderId = String(b?.orderId ?? "");
-  return amount <= 0 || pr === "MEMBERSHIP" || !orderId;
+  return amount <= 0 || ref === "MEMBERSHIP" || ref === "CASH" || !orderId || orderId.startsWith("admin_");
 }
 
-// Decrement gamesUsed by exactly 1 (clamped at 0) atomically
 async function restoreOneCreditAtomic(userId: string) {
   const Membership = await MembershipModel();
   const res = await Membership.updateOne(
@@ -150,12 +146,10 @@ async function restoreOneCreditAtomic(userId: string) {
           },
         },
       },
-    ]
+    ] as unknown as import("mongoose").UpdateWithAggregationPipeline
   );
   return res.modifiedCount > 0;
 }
-
-/* ---------------- Route ---------------- */
 
 export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -178,14 +172,17 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     }
 
     const Booking = await BookingModel();
-    const Refund = await RefundModel(); // declare ONCE
+    const GuestBooking = await GuestBookingModel();
+    const Refund = await RefundModel();
 
     const booking = await Booking.findById(id).lean<BookingLean | null>();
-    if (!booking) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
+    const guest = booking ? null : await GuestBooking.findById(id).lean<GuestLean | null>();
+    if (!booking && !guest) return NextResponse.json({ error: "Booking not found" }, { status: 404 });
 
-    const slots: Slot[] = Array.isArray(booking.slots)
-      ? (booking.slots as Slot[])
-      : [];
+    const doc = (booking ?? guest)!;
+    const isGuest = !!guest;
+
+    const slots: Slot[] = Array.isArray(doc.slots) ? (doc.slots as Slot[]) : [];
     const totalSlots = slots.length;
 
     let targetIdx = slotIndex;
@@ -201,34 +198,29 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       return NextResponse.json({ error: "Slot not found in booking" }, { status: 404 });
     }
 
-    // Billing info
-    const rawAmount = Number(booking.amount);
+    const rawAmount = Number(doc.amount);
     const amount = Number.isFinite(rawAmount) ? Math.max(0, rawAmount) : 0;
-    const currency = booking.currency || "INR";
-    const orderId = String(booking.orderId || "");
-    const paymentRef = String(booking.paymentRef || "");
-    const membership = isMembershipBooking(booking);
+    const currency = doc.currency || "INR";
+    const orderId = String(doc.orderId || "");
+    const paymentRef = String((booking ? booking.paymentRef : guest?.paymentRef) || "");
 
-    // Target slot (we remove later on success)
     const targetSlot = slots[targetIdx];
 
-    /* ---------------- MEMBERSHIP FLOW ---------------- */
-    if (membership) {
+    // Membership / free (no gateway)
+    if (!isGuest && (amount <= 0 || paymentRef.toUpperCase() === "MEMBERSHIP" || !orderId)) {
       const sig = `${targetSlot.courtId}_${targetSlot.start}_${targetSlot.end}`;
-
-      // Idempotency: avoid double-credit and double-ledger
       const exists = await Refund.findOne({
         kind: "booking_slot",
-        bookingId: String(booking._id),
+        bookingId: String((doc as { _id: string })._id),
         "meta.slotSignature": sig,
       }).lean();
       if (!exists) {
         const created = await Refund.create({
           kind: "booking_slot",
-          bookingId: String(booking._id),
-          userId: (booking as unknown as { userId?: string }).userId,
-          userEmail: (booking as unknown as { userEmail?: string }).userEmail,
-          userName: (booking as unknown as { userName?: string }).userName,
+          bookingId: String((doc as { _id: string })._id),
+          userId: booking ? (booking as { userId?: string }).userId : undefined,
+          userEmail: booking ? (booking as { userEmail?: string }).userEmail : undefined,
+          userName: booking ? (booking as { userName?: string }).userName : undefined,
           amount: 0,
           currency,
           reason: "Membership slot cancel",
@@ -239,7 +231,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
           gateway: "NONE",
           membershipCreditRestored: false,
           meta: {
-            date: (booking as unknown as { date?: string | Date }).date,
+            date: (doc as { date?: string }).date,
             slot: targetSlot,
             slotSignature: sig,
             paymentRef,
@@ -247,57 +239,100 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
           },
         });
 
-        const ok = await restoreOneCreditAtomic(String((booking as unknown as { userId?: string }).userId || ""));
+        const ok = await restoreOneCreditAtomic(String((booking as { userId?: string }).userId || ""));
         if (ok) {
           await Refund.updateOne({ _id: created._id }, { $set: { membershipCreditRestored: true } });
         }
       }
 
-      // Remove only this slot; delete booking if empty
       await Booking.updateOne(
-        { _id: booking._id },
-        {
-          $pull: {
-            slots: {
-              courtId: targetSlot.courtId,
-              start: targetSlot.start,
-              end: targetSlot.end,
-            },
-          },
-        }
+        { _id: (doc as { _id: string })._id },
+        { $pull: { slots: { courtId: targetSlot.courtId, start: targetSlot.start, end: targetSlot.end } } }
       );
-
       const after = await Booking.findById(id).select({ slots: 1 }).lean<{ slots?: Slot[] } | null>();
       const noSlotsLeft = !after || !Array.isArray(after.slots) || after.slots.length === 0;
       if (noSlotsLeft) await Booking.findByIdAndDelete(id);
 
+      return NextResponse.json({ ok: true, action: "slot_cancelled", refundStatus: "NO_REFUND_REQUIRED" });
+    }
+
+    // Guest or Admin CASH (non-gateway)
+    if (isNonGatewayBooking(doc)) {
+      const perSlotRefund = amount > 0 && totalSlots > 0 ? Number((amount / totalSlots).toFixed(2)) : 0;
+
+      await Refund.create({
+        kind: "booking_slot",
+        bookingId: String((doc as { _id: string })._id),
+        userName: booking ? (booking as { userName?: string }).userName : (guest as { userName: string }).userName,
+        userId: booking ? (booking as { userId?: string }).userId : undefined,
+        userEmail: booking ? (booking as { userEmail?: string }).userEmail : undefined,
+        amount: perSlotRefund,
+        currency,
+        reason: isGuest ? "Guest booking slot cancel (offline refund)" : "Admin CASH slot cancel",
+        refundStatus: "NO_REFUND_REQUIRED",
+        status: "NO_REFUND_REQUIRED",
+        statusDescription: "No payment gateway refund required",
+        orderId,
+        gateway: "NONE",
+        membershipCreditRestored: false,
+        meta: {
+          isGuest,
+          date: (doc as { date?: string }).date,
+          slot: targetSlot,
+          totalSlotsBefore: totalSlots,
+        },
+      });
+
+      if (isGuest) {
+        await GuestBooking.updateOne(
+          { _id: (doc as { _id: string })._id },
+          {
+            $pull: { slots: { courtId: targetSlot.courtId, start: targetSlot.start, end: targetSlot.end } },
+            ...(amount > 0 && totalSlots > 0 ? { $inc: { amount: -Number((amount / totalSlots).toFixed(2)) } } : {}),
+          }
+        );
+        const after = await GuestBooking.findById(id).select({ slots: 1 }).lean<{ slots?: Slot[] } | null>();
+        const noSlotsLeft = !after || !Array.isArray(after.slots) || after.slots.length === 0;
+        if (noSlotsLeft) await GuestBooking.findByIdAndDelete(id);
+      } else {
+        await Booking.updateOne(
+          { _id: (doc as { _id: string })._id },
+          {
+            $pull: { slots: { courtId: targetSlot.courtId, start: targetSlot.start, end: targetSlot.end } },
+            ...(amount > 0 && totalSlots > 0 ? { $inc: { amount: -Number((amount / totalSlots).toFixed(2)) } } : {}),
+          }
+        );
+        const after = await Booking.findById(id).select({ slots: 1 }).lean<{ slots?: Slot[] } | null>();
+        const noSlotsLeft = !after || !Array.isArray(after.slots) || after.slots.length === 0;
+        if (noSlotsLeft) await Booking.findByIdAndDelete(id);
+      }
+
       return NextResponse.json({
         ok: true,
         action: "slot_cancelled",
+        refunded: amount > 0 && totalSlots > 0 ? Number((amount / totalSlots).toFixed(2)) : 0,
+        currency,
         refundStatus: "NO_REFUND_REQUIRED",
       });
     }
 
-    /* ---------------- PAID FLOW ---------------- */
-    // Compute per-slot refund; do NOT mutate DB yet.
+    // Customer online booking → Cashfree (per-slot refund)
     const perSlotRefund = amount > 0 && totalSlots > 0 ? Number((amount / totalSlots).toFixed(2)) : 0;
     if (perSlotRefund <= 0) {
       return NextResponse.json({ error: "Calculated refund amount is zero or invalid" }, { status: 400 });
     }
 
-    // 1) Create refund
     const cf = await createCashfreeRefund({
       orderId,
       amount: perSlotRefund,
       note: `Admin cancel booking slot for booking ${id}`,
     });
 
-    // 2) If Cashfree replied PENDING, poll status a few times before giving up
+    // If not success, do quick poll
     let finalStatus = (cf.refundStatus || "").toUpperCase();
     const refundId = cf.refundId;
-
     if (finalStatus !== "SUCCESS") {
-      const delays = [500, 900, 1300]; // quick retries (ms)
+      const delays = [500, 900, 1300];
       for (const d of delays) {
         await sleep(d);
         const s = await fetchCashfreeRefundStatus(orderId, refundId);
@@ -307,57 +342,42 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     }
 
     if (finalStatus !== "SUCCESS") {
-      // Still not success → do not mutate booking
-      return NextResponse.json(
-        {
-          error: "Refund not successful yet",
-          status: finalStatus,
-        },
-        { status: 409 }
-      );
+      return NextResponse.json({ error: "Refund not successful yet", status: finalStatus }, { status: 409 });
     }
 
-    // 3) Write refund row (SUCCESS) → refunds collection
     await Refund.create({
       kind: "booking_slot",
-      bookingId: String(booking._id),
-      userId: (booking as unknown as { userId?: string }).userId,
-      userEmail: (booking as unknown as { userEmail?: string }).userEmail,
-      userName: (booking as unknown as { userName?: string }).userName,
+      bookingId: String((doc as { _id: string })._id),
+      userId: booking ? (booking as { userId?: string }).userId : undefined,
+      userEmail: booking ? (booking as { userEmail?: string }).userEmail : undefined,
+      userName: booking ? (booking as { userName?: string }).userName : undefined,
       amount: perSlotRefund,
       currency,
       reason: "Admin cancel slot",
-      refundId: refundId,
+      refundId,
       cfRefundId: cf.cfRefundId || undefined,
       cfPaymentId: cf.cfPaymentId || undefined,
       orderId,
-      refundStatus: "SUCCESS", // ✅ now allowed in schema
+      refundStatus: "SUCCESS",
       status: "SUCCESS",
       statusDescription: cf.statusDescription,
       gateway: "CASHFREE",
       membershipCreditRestored: false,
       meta: {
-        date: (booking as unknown as { date?: string | Date }).date,
+        date: (doc as { date?: string }).date,
         slot: targetSlot,
         totalSlotsBefore: totalSlots,
       },
     });
 
-    // 4) Remove only this slot and decrement amount; delete doc if empty
+    // Pull the slot and decrement amount; delete if empty
     await Booking.updateOne(
-      { _id: booking._id },
+      { _id: (doc as { _id: string })._id },
       {
-        $pull: {
-          slots: {
-            courtId: targetSlot.courtId,
-            start: targetSlot.start,
-            end: targetSlot.end,
-          },
-        },
+        $pull: { slots: { courtId: targetSlot.courtId, start: targetSlot.start, end: targetSlot.end } },
         $inc: { amount: -perSlotRefund },
       }
     );
-
     const after = await Booking.findById(id).select({ slots: 1 }).lean<{ slots?: Slot[] } | null>();
     const noSlotsLeft = !after || !Array.isArray(after.slots) || after.slots.length === 0;
     if (noSlotsLeft) await Booking.findByIdAndDelete(id);

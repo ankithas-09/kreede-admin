@@ -1,6 +1,7 @@
 // app/api/bookings/availability/route.ts
 import { NextResponse } from "next/server";
 import { BookingModel } from "@/models/Booking";
+import { GuestBookingModel } from "@/models/GuestBooking";
 
 type SlotLoose = { courtId: number | string; start: string; end: string };
 type BookingSlotsOnly = { slots?: SlotLoose[] };
@@ -8,22 +9,24 @@ type BookingSlotsOnly = { slots?: SlotLoose[] };
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const date = (searchParams.get("date") || "").trim(); // YYYY-MM-DD
+    const date = (searchParams.get("date") || "").trim();
     if (!date) return NextResponse.json({ availability: {} });
 
     const Booking = await BookingModel();
+    const GuestBooking = await GuestBookingModel();
 
-    // Find bookings for the date; we only need slots & court ids
-    const docs = await Booking.find({ date })
-      .select({ slots: 1 })
-      .lean<BookingSlotsOnly[]>();
+    const [docsA, docsG] = await Promise.all([
+      Booking.find({ date }).select({ slots: 1 }).lean<BookingSlotsOnly[]>(),
+      GuestBooking.find({ date }).select({ slots: 1 }).lean<BookingSlotsOnly[]>(),
+    ]);
+
+    const all = [...docsA, ...docsG];
 
     const availability: Record<number, { start: string; end: string }[]> = {};
-
-    for (const b of docs) {
+    for (const b of all) {
       const slots: SlotLoose[] = Array.isArray(b.slots) ? b.slots : [];
       for (const s of slots) {
-        const courtIdNum = Number((s as SlotLoose).courtId);
+        const courtIdNum = Number(s.courtId);
         if (!Number.isFinite(courtIdNum)) continue;
         if (!availability[courtIdNum]) availability[courtIdNum] = [];
         availability[courtIdNum].push({ start: s.start, end: s.end });
