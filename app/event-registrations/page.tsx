@@ -4,6 +4,8 @@ import { RegistrationModel } from "@/models/Registrations";
 import AddRegistrationButton from "./AddRegistrationButton";
 import MarkPaidButton from "./MarkPaidButton";
 import CancelRegistrationButton from "./CancelEventRegButton";
+import RefundButton from "./RefundButton";
+import ClearEventButton from "./ClearEventButton";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +14,38 @@ function fmtDate(v?: string | Date) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Build a JS Date from event's date+time strings (server tz)
+function buildDate(dateStr?: string, timeStr?: string): Date | null {
+  if (!dateStr) return null;
+  // timeStr like "HH:MM" (24h). If missing, default to end of day.
+  const t = (timeStr || "23:59").split(":");
+  const [hh, mm] = [Number(t[0] || 0), Number(t[1] || 0)];
+  const [y, m, d] = dateStr.split("-").map(Number); // expecting YYYY-MM-DD
+  if (!y || !m || !d) return null;
+  const dt = new Date(y, m - 1, d, hh, mm, 0, 0);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function isEventOver(ev: {
+  startDate?: string;
+  endDate?: string;
+  startTime?: string;
+  endTime?: string;
+}) {
+  // Consider event over if "now" is past its end (endDate+endTime) or,
+  // if no end specified, past start (startDate+startTime).
+  const endDT =
+    buildDate(ev.endDate, ev.endTime) ||
+    buildDate(ev.startDate, ev.endTime) ||
+    buildDate(ev.endDate, ev.startTime);
+  const startDT = buildDate(ev.startDate, ev.startTime);
+
+  const now = new Date();
+  if (endDT) return now > endDT;
+  if (startDT) return now > startDT;
+  return false;
 }
 
 type EventLean = {
@@ -29,10 +63,18 @@ type EventLean = {
 type RegistrationLean = {
   _id: string | { toString?: () => string };
   eventId: string;
+
+  // account-based
   userName?: string;
   userEmail?: string;
+
+  // guest-based
+  guestName?: string;
+  guestPhone?: string;
+
   amount?: number;
   adminPaid?: boolean;
+  status?: "PAID" | "REFUNDED";
   createdAt?: string | Date;
 };
 
@@ -58,15 +100,21 @@ export default async function EventRegistrationsPage() {
     .sort({ createdAt: -1 })
     .lean()) as EventLean[];
 
-  // Preload registrations per event
-  const eventIds = events.map((e) => toIdString(e._id));
+  // Filter OUT events that are already over (UI only; DB untouched)
+  const upcomingOrOngoing = events.filter((ev) => !isEventOver(ev));
+
+  // Preload registrations per event (include guest fields + status)
+  const eventIds = upcomingOrOngoing.map((e) => toIdString(e._id));
   const registrations = (await Registration.find({ eventId: { $in: eventIds } })
     .select({
       eventId: 1,
       userName: 1,
       userEmail: 1,
+      guestName: 1,
+      guestPhone: 1,
       amount: 1,
       adminPaid: 1,
+      status: 1,
       createdAt: 1,
     })
     .sort({ createdAt: -1 })
@@ -79,8 +127,18 @@ export default async function EventRegistrationsPage() {
     byEvent.get(k)!.push(r);
   }
 
-  const paymentBadge = (paid?: boolean) =>
-    paid ? (
+  const paymentBadge = (status?: "PAID" | "REFUNDED", paid?: boolean) => {
+    if (status === "REFUNDED") {
+      return (
+        <span
+          className="badge"
+          style={{ background: "#f0f9ff", borderColor: "rgba(2,132,199,0.35)", color: "#0369a1" }}
+        >
+          REFUNDED
+        </span>
+      );
+    }
+    return paid ? (
       <span className="badge">PAID</span>
     ) : (
       <span
@@ -90,6 +148,7 @@ export default async function EventRegistrationsPage() {
         UNPAID
       </span>
     );
+  };
 
   return (
     <div className="dash-wrap" style={{ paddingTop: 12, paddingBottom: 24 }}>
@@ -107,7 +166,7 @@ export default async function EventRegistrationsPage() {
       </div>
 
       <div style={{ display: "grid", gap: 16 }}>
-        {events.map((ev) => {
+        {upcomingOrOngoing.map((ev) => {
           const fee = Number(ev.entryFee ?? 0);
           const items = byEvent.get(toIdString(ev._id)) || [];
           const dateStr =
@@ -135,17 +194,23 @@ export default async function EventRegistrationsPage() {
                   <h2 className="card__title" style={{ marginBottom: 6 }}>
                     {ev.title || "Untitled Event"}
                   </h2>
-                  <p className="card__subtitle">
-                    Dates: {dateStr} &nbsp;·&nbsp; Time: {timeStr} &nbsp;·&nbsp; Entry Fee:{" "}
-                    {fee > 0 ? `₹${fee}` : "Free"}
-                  </p>
                 </div>
 
-                <AddRegistrationButton
-                  eventId={toIdString(ev._id)}
-                  eventTitle={ev.title || ""}
-                  entryFee={fee}
-                />
+                <div>
+                  <p className="card__subtitle" style={{ marginBottom: 6 }}>
+                    Dates: {dateStr} &nbsp;·&nbsp; Time: {timeStr}
+                  </p>
+                  <p className="card__subtitle">Entry Fee: {fee > 0 ? `₹${fee}` : "Free"}</p>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <AddRegistrationButton
+                    eventId={toIdString(ev._id)}
+                    eventTitle={ev.title || ""}
+                    entryFee={fee}
+                  />
+                  <ClearEventButton eventId={toIdString(ev._id)} />
+                </div>
               </div>
 
               <div className="card__body">
@@ -154,29 +219,38 @@ export default async function EventRegistrationsPage() {
                     <thead>
                       <tr>
                         <th style={{ minWidth: 200 }}>User Name</th>
-                        <th style={{ minWidth: 260 }}>User Email</th>
+                        <th style={{ minWidth: 260 }}>Email / Phone</th>
                         <th style={{ minWidth: 120 }}>Amount</th>
                         <th style={{ minWidth: 120 }}>Payment</th>
-                        <th style={{ minWidth: 180 }}>Actions</th>
+                        <th style={{ minWidth: 260 }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {items.map((r) => (
-                        <tr key={toIdString(r._id)}>
-                          <td>{r.userName || "—"}</td>
-                          <td>{r.userEmail || "—"}</td>
-                          <td>{typeof r.amount === "number" ? `₹${r.amount}` : "—"}</td>
-                          <td>{paymentBadge(r.adminPaid)}</td>
-                          <td>
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              {!r.adminPaid && (
-                                <MarkPaidButton kind="registration" id={toIdString(r._id)} />
-                              )}
-                              <CancelRegistrationButton id={toIdString(r._id)} />
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                      {items.map((r) => {
+                        const displayName = r.guestName || r.userName || "—";
+                        const displayContact = r.guestPhone || r.userEmail || "—";
+                        const isRefunded = r.status === "REFUNDED";
+                        const showMarkPaid = !isRefunded && !r.adminPaid;
+                        const showRefund = !isRefunded && fee > 0;
+
+                        return (
+                          <tr key={toIdString(r._id)}>
+                            <td>{displayName}</td>
+                            <td>{displayContact}</td>
+                            <td>{typeof r.amount === "number" ? `₹${r.amount}` : "—"}</td>
+                            <td>{paymentBadge(r.status, r.adminPaid)}</td>
+                            <td>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                {showMarkPaid && (
+                                  <MarkPaidButton kind="registration" id={toIdString(r._id)} />
+                                )}
+                                {showRefund && <RefundButton id={toIdString(r._id)} />}
+                                <CancelRegistrationButton id={toIdString(r._id)} />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
 
                       {items.length === 0 && (
                         <tr>
@@ -193,9 +267,9 @@ export default async function EventRegistrationsPage() {
           );
         })}
 
-        {events.length === 0 && (
+        {upcomingOrOngoing.length === 0 && (
           <div className="card">
-            <div className="card__body">No events found.</div>
+            <div className="card__body">No upcoming events.</div>
           </div>
         )}
       </div>

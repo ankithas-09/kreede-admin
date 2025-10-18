@@ -13,6 +13,9 @@ type AdminBookingBody = {
   date: string;
   slots: Slot[];
   markPaid: boolean;
+  // ↓ optional hints for backend to persist the exact paymentRef state
+  paymentRef?: string; // "PAID.CASH" | "UNPAID.CASH" | "MEMBERSHIP" | etc.
+
   userEmail?: string;
   userName?: string;
   userId?: string; // username
@@ -65,6 +68,7 @@ export default function AddBookingButton() {
 
   // availability
   const [availability, setAvailability] = useState<Availability>({});
+  
   const [loadingAvail, setLoadingAvail] = useState(false);
 
   // submit state
@@ -229,6 +233,15 @@ export default function AddBookingButton() {
         slots: selected,
         markPaid,
       };
+
+      // Explicit paymentRef hint so backend can persist the exact state:
+      // - Members always "MEMBERSHIP" and treated as paid
+      // - Non-members: PAID.CASH vs UNPAID.CASH
+      if (who === "member") {
+        body.paymentRef = "MEMBERSHIP";
+      } else {
+        body.paymentRef = markPaid ? "PAID.CASH" : "UNPAID.CASH";
+      }
 
       if (who === "member" || who === "user") {
         body.userEmail = (selectedUser?.email || "").toLowerCase();

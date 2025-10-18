@@ -69,9 +69,11 @@ export async function POST(req: Request) {
 
     // paymentRef:
     // - Member: MEMBERSHIP
-    // - Non-member (user/guest): CASH if markPaid, else UNPAID.CASH
+    // - Non-member (user/guest):
+    //     * markPaid -> PAID.CASH
+    //     * pending  -> UNPAID.CASH
     const paymentRef =
-      isMember ? "MEMBERSHIP" : (markPaid ? "CASH" : "UNPAID.CASH");
+      isMember ? "MEMBERSHIP" : (markPaid ? "PAID.CASH" : "UNPAID.CASH");
 
     // Always set a unique orderId for admin-created bookings
     const orderId = genAdminOrderId();
@@ -85,9 +87,9 @@ export async function POST(req: Request) {
         slots,
         amount: totalAmount,
         currency,
-        status: "PAID",        // schema expects PAID; we use adminPaid to reflect unpaid UI state
-        paymentRef,            // "UNPAID.CASH" when pending
-        adminPaid,             // false when pending
+        status: "PAID",        // stored as PAID (your admin flow)
+        paymentRef,            // "PAID.CASH" or "UNPAID.CASH"
+        adminPaid,             // false when pending, true when marked paid
       });
       return NextResponse.json({ ok: true, id: String(created._id) });
     }
@@ -103,7 +105,7 @@ export async function POST(req: Request) {
       amount:   totalAmount,
       currency,
       status:   "PAID",        // stored as PAID; adminPaid governs paid/unpaid in UI
-      paymentRef,              // "CASH" or "UNPAID.CASH" for non-members
+      paymentRef,              // "PAID.CASH" or "UNPAID.CASH" for non-members; "MEMBERSHIP" for members
       adminPaid,               // false when pending
     });
 

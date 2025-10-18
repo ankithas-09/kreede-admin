@@ -40,7 +40,7 @@ async function createCashfreeRefund(params: { orderId: string; amount: number; n
     body: JSON.stringify({
       refund_amount: params.amount,
       refund_id: refundId,
-      refund_note: params.note || "Admin cancel registration",
+      refund_note: params.note || "Admin refund registration",
       refund_speed: "STANDARD",
     }),
     cache: "no-store",
@@ -88,11 +88,17 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
         userId: 1,
         userEmail: 1,
         userName: 1,
+        guestId: 1,
+        guestName: 1,
+        guestPhone: 1,
         eventId: 1,
         eventTitle: 1,
         orderId: 1,      // may be undefined
-        amount: 1,       // might exist on registration
+        amount: 1,       // may be present
+        currency: 1,
         createdAt: 1,
+        status: 1,
+        paymentRef: 1,
       })
       .lean<RegistrationDoc | null>();
 
@@ -108,7 +114,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     const amountFromEvent = typeof ev?.entryFee === "number" ? ev.entryFee : undefined;
     const amountFromReg   = typeof reg.amount === "number" ? reg.amount : undefined;
     const amount = (amountFromEvent ?? amountFromReg ?? 0);
-    const currency = "INR";
+    const currency = reg.currency || "INR";
 
     let refundStatus = "NO_REFUND_REQUIRED";
     let refundId: string | undefined;
@@ -124,24 +130,24 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
       const cf = await createCashfreeRefund({
         orderId,
         amount,
-        note: `Admin cancel registration ${regId}`,
+        note: `Admin refund registration ${regId}`,
       });
       refundId          = cf.refundId;
       cfRefundId        = cf.cfRefundId;
       cfPaymentId       = cf.cfPaymentId;
-      refundStatus      = cf.refundStatus || "PENDING";
+      refundStatus      = (cf.refundStatus || "PENDING").toUpperCase();
       statusDescription = cf.statusDescription;
       raw               = cf.raw;
 
       if (!["SUCCESS", "PENDING"].includes(refundStatus)) {
-        // record failed attempt; do not delete registration
+        // Record failed attempt; keep the registration unchanged.
         await EventRefund.create({
           registrationId: regId,
           eventId: reg.eventId,
           eventTitle: reg.eventTitle,
-          userId: reg.userId || "",
+          userId: reg.userId || reg.guestId || "",
           userEmail: (reg.userEmail || "").toLowerCase(),
-          userName: reg.userName,
+          userName: reg.userName || reg.guestName,
           amount,
           currency,
           refundId,
@@ -150,7 +156,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
           status: "FAILED",
           statusDescription,
           gateway: "CASHFREE",
-          meta: { raw, orderId },
+          meta: { raw, orderId, guestPhone: reg.guestPhone },
         });
         return NextResponse.json(
           { error: `Cashfree refund not accepted: ${refundStatus}`, details: raw },
@@ -158,18 +164,18 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
         );
       }
     } else {
-      // No orderId or zero fee -> informational row
+      // No orderId or zero fee -> informational "no refund required"
       refundStatus = "NO_REFUND_REQUIRED";
     }
 
-    // Persist refund record and delete the registration
+    // Record the refund attempt/result
     await EventRefund.create({
       registrationId: regId,
       eventId: reg.eventId,
       eventTitle: reg.eventTitle,
-      userId: reg.userId || "",
+      userId: reg.userId || reg.guestId || "",
       userEmail: (reg.userEmail || "").toLowerCase(),
-      userName: reg.userName,
+      userName: reg.userName || reg.guestName,
       amount,
       currency,
       refundId,
@@ -183,14 +189,18 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
           : "NO_REFUND_REQUIRED",
       statusDescription: statusDescription || (orderId ? undefined : "No order id or zero fee"),
       gateway: orderId && amount > 0 ? "CASHFREE" : "NONE",
-      meta: raw ? { raw, orderId } : orderId ? { orderId } : undefined,
+      meta: raw ? { raw, orderId, guestPhone: reg.guestPhone } : orderId ? { orderId, guestPhone: reg.guestPhone } : { guestPhone: reg.guestPhone },
     });
 
-    await Registration.findByIdAndDelete(regId);
+    // ✅ Flip the registration's status to REFUNDED and clear adminPaid
+    await Registration.updateOne(
+      { _id: regId },
+      { $set: { status: "REFUNDED", adminPaid: false } }
+    );
 
     return NextResponse.json({
       ok: true,
-      deletedId: regId,
+      updatedId: regId,
       refunded: amount,
       currency,
       refundStatus,

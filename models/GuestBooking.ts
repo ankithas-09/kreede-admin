@@ -11,10 +11,10 @@ export interface GuestBookingDoc extends mongoose.Document {
   slots: { courtId: number; start: string; end: string }[];
 
   amount: number;
-  currency: string;        // "INR"
-  status: "PAID";          // matches your admin flow
-  paymentRef: "CASH" | "UNPAID.CASH"; // allow pending cash
-  adminPaid?: boolean;     // false when pending, true after mark-paid
+  currency: string; // "INR"
+  status: "PAID";   // admin flow keeps this as PAID; adminPaid reflects paid/unpaid UI state
+  paymentRef: "PAID.CASH" | "UNPAID.CASH" | "CASH"; // include CASH for backward compatibility
+  adminPaid?: boolean; // false when pending (UNPAID.CASH), true after mark-paid (PAID.CASH)
 
   createdAt: Date;
   updatedAt: Date;
@@ -41,13 +41,13 @@ const GuestBookingSchema = new Schema<GuestBookingDoc>(
     currency:   { type: String, default: "INR" },
 
     status:     { type: String, enum: ["PAID"], default: "PAID" },
-    paymentRef: { type: String, enum: ["CASH", "UNPAID.CASH"], required: true },
+    paymentRef: { type: String, enum: ["PAID.CASH", "UNPAID.CASH", "CASH"], required: true },
     adminPaid:  { type: Boolean, default: false },
   },
   { collection: "guest_bookings", timestamps: true, strict: true }
 );
 
-// make orderId unique only if it's a string (admin-created always has one)
+// Make orderId unique only if it's a string (admin-created always has one)
 GuestBookingSchema.index(
   { orderId: 1 },
   { unique: true, partialFilterExpression: { orderId: { $type: "string" } } }

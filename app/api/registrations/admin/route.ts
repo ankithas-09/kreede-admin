@@ -5,6 +5,10 @@ import { EventModel } from "@/models/Event";
 
 type EventLean = { entryFee?: number; title?: string };
 
+function genGuestId() {
+  return `guest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -45,14 +49,23 @@ export async function POST(req: Request) {
     const adminPaid = isFree ? true : !!markPaid;
     const paymentRef = isFree ? "FREE" : "CASH";
 
+    // Generate guestId if this is a guest
+    const guestId = isGuest ? genGuestId() : undefined;
+
     const doc = await Registration.create({
       eventId: String(eventId),
       eventTitle: eventTitle || ev.title || "",
-      userId:   isGuest ? undefined : userId,
-      userName: isGuest ? (guestName || "Guest") : (userName || "—"),
-      userEmail:isGuest ? undefined : (userEmail ? String(userEmail).toLowerCase() : undefined),
-      guestName:  isGuest ? guestName : undefined,
-      guestPhone: isGuest ? guestPhone : undefined,
+
+      // identified user
+      userId:    isGuest ? undefined : userId,
+      userName:  isGuest ? undefined : (userName || "—"),
+      userEmail: isGuest ? undefined : (userEmail ? String(userEmail).toLowerCase() : undefined),
+
+      // guest fields
+      guestId:   isGuest ? guestId : undefined,
+      guestName: isGuest ? guestName : undefined,
+      guestPhone:isGuest ? guestPhone : undefined,
+
       amount: fee,
       currency: "INR",
       status: "PAID",
@@ -60,7 +73,11 @@ export async function POST(req: Request) {
       paymentRef,
     });
 
-    return NextResponse.json({ ok: true, id: String(doc._id) });
+    return NextResponse.json({
+      ok: true,
+      id: String(doc._id),
+      guestId: doc.guestId, // handy for the UI if you want to show it / copy it
+    });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Server error";
     console.error("admin registrations create error:", e);
