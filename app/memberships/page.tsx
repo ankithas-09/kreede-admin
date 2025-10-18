@@ -1,13 +1,12 @@
 // app/memberships/page.tsx
 import AddMembershipGlobalButton from "./AddMembershipGlobalButton";
+import RestoreMembershipButton from "./RestoreMembershipButton"; // ⬅️ NEW
 import { UserModel } from "@/models/User";
 import { MembershipModel } from "@/models/Membership";
 
 export const dynamic = "force-dynamic";
 
-type SearchParams = {
-  q?: string; // search by name/email/phone/username
-};
+type SearchParams = { q?: string };
 
 function fmtDate(v?: Date | string) {
   if (!v) return "—";
@@ -74,12 +73,8 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
 
   // 2) Fetch latest membership for these users (by userId/email/name)
   const ids = users.map((u) => toIdString(u._id));
-  const emails = users
-    .map((u) => (u.email || "").toLowerCase())
-    .filter((e): e is string => Boolean(e));
-  const names = users
-    .map((u) => (u.name || "").trim())
-    .filter((n): n is string => Boolean(n));
+  const emails = users.map((u) => (u.email || "").toLowerCase()).filter(Boolean) as string[];
+  const names = users.map((u) => (u.name || "").trim()).filter(Boolean) as string[];
 
   const allMemberships = (await Membership.find({
     $or: [
@@ -93,10 +88,9 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
       planId: 1, planName: 1, amount: 1, currency: 1,
       status: 1, createdAt: 1, durationMonths: 1, games: 1, gamesUsed: 1,
     })
-    .sort({ createdAt: -1 }) // newest first so the first we see becomes "latest"
+    .sort({ createdAt: -1 })
     .lean()) as MembershipLean[];
 
-  // Index latest per user (by userId/email/name)
   const byId = new Map<string, MembershipLean>();
   const byEmail = new Map<string, MembershipLean>();
   const byName = new Map<string, MembershipLean>();
@@ -131,7 +125,6 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
     return !!m && m.status === "PAID";
   });
 
-  // Export URL
   const params = new URLSearchParams();
   if (q) params.set("q", q);
   const exportHref = `/api/memberships/export${params.toString() ? `?${params.toString()}` : ""}`;
@@ -150,9 +143,7 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {/* Global add: search user in a modal, pick plan, and create as PAID */}
           <AddMembershipGlobalButton />
-
           <a
             href="/dashboard"
             className="btn"
@@ -198,15 +189,16 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
                 <th style={{ minWidth: 180 }}>Name</th>
                 <th style={{ minWidth: 240 }}>Email</th>
                 <th style={{ minWidth: 90 }}>Plan</th>
+                <th style={{ minWidth: 110 }}>Games</th>
                 <th style={{ minWidth: 120 }}>Amount</th>
                 <th style={{ minWidth: 130 }}>Start</th>
                 <th style={{ minWidth: 130 }}>End</th>
-                <th style={{ minWidth: 130 }}>Status</th>
+                <th style={{ minWidth: 180 }}>Status</th>
               </tr>
             </thead>
             <tbody>
               {usersWithPaidMembership.map((u) => {
-                const m = latestFor(u)!; // guaranteed non-null by the filter above
+                const m = latestFor(u)!; // guaranteed non-null
                 const plan = m ? (m.planName || m.planId || "—") : "—";
                 const amount =
                   typeof m.amount === "number"
@@ -216,7 +208,8 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
                     : "—";
                 const start = m ? fmtDate(m.start) : "—";
                 const end = m ? fmtDate(m.end) : "—";
-                const status = m ? (m.isActive ? "ACTIVE" : (m.status || "—")) : "—";
+                const isExpired = m.status === "PAID" && new Date() >= m.end;
+                const statusText = m ? (m.isActive ? "ACTIVE" : "EXPIRED") : "—";
 
                 return (
                   <tr key={toIdString(u._id)}>
@@ -224,10 +217,40 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
                     <td>{u.name || "—"}</td>
                     <td>{u.email || "—"}</td>
                     <td>{plan}</td>
+                    <td>
+                      {typeof m.games === "number" && typeof m.gamesUsed === "number"
+                        ? `${m.gamesUsed}/${m.games}`
+                        : "—"}
+                    </td>
                     <td>{amount}</td>
                     <td>{start}</td>
                     <td>{end}</td>
-                    <td>{status}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <span
+                          className="badge"
+                          style={
+                            m.isActive
+                              ? undefined
+                              : { background: "#fff0f0", borderColor: "rgba(176,0,32,0.35)", color: "#b00020" }
+                          }
+                        >
+                          {statusText}
+                        </span>
+
+                        {/* Restore button: enabled only after end date */}
+                        <RestoreMembershipButton
+                          enabled={isExpired}
+                          user={{
+                            _id: toIdString(u._id),
+                            userId: u.userId,
+                            name: u.name,
+                            email: u.email,
+                            phone: u.phone,
+                          }}
+                        />
+                      </div>
+                    </td>
                   </tr>
                 );
               })}

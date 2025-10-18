@@ -4,6 +4,7 @@ import { BookingModel, type BookingDoc } from "@/models/Booking";
 import { GuestBookingModel, type GuestBookingDoc } from "@/models/GuestBooking";
 import { RefundModel } from "@/models/Refund";
 import { MembershipModel } from "@/models/Membership";
+import { UserModel } from "@/models/User"; // ⬅️ added
 
 /* ---------------- Cashfree helpers ---------------- */
 function cashfreeBase() {
@@ -134,10 +135,21 @@ function isNonGatewayBooking(b: { amount?: number; paymentRef?: string; orderId?
   return amount <= 0 || ref === "MEMBERSHIP" || ref === "CASH" || !orderId || orderId.startsWith("admin_");
 }
 
-async function restoreOneCreditAtomic(userId: string) {
+// ⬇️ NEW: resolve users._id from email or username, then restore exactly 1 credit atomically
+async function restoreOneCreditAtomicByEmailOrUsername(userEmail?: string, usernameHint?: string) {
+  const User = await UserModel();
+  const userDoc = await User.findOne({
+    $or: [
+      ...(userEmail ? [{ email: String(userEmail).toLowerCase() }] : []),
+      ...(usernameHint ? [{ userId: usernameHint }] : []),
+    ],
+  }).lean();
+
+  if (!userDoc?._id) return false;
+
   const Membership = await MembershipModel();
   const res = await Membership.updateOne(
-    { userId, status: "PAID" },
+    { userId: String(userDoc._id), status: "PAID" },
     [
       {
         $set: {
@@ -206,7 +218,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
 
     const targetSlot = slots[targetIdx];
 
-    // Membership / free (no gateway)
+    // Membership / free (no gateway) → restore 1 credit
     if (!isGuest && (amount <= 0 || paymentRef.toUpperCase() === "MEMBERSHIP" || !orderId)) {
       const sig = `${targetSlot.courtId}_${targetSlot.start}_${targetSlot.end}`;
       const exists = await Refund.findOne({
@@ -239,7 +251,11 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
           },
         });
 
-        const ok = await restoreOneCreditAtomic(String((booking as { userId?: string }).userId || ""));
+        // ⬇️ Restore 1 credit to the correct membership using email/username -> users._id
+        const ok = await restoreOneCreditAtomicByEmailOrUsername(
+          booking ? (booking as { userEmail?: string }).userEmail : undefined,
+          booking ? (booking as { userId?: string }).userId : undefined
+        );
         if (ok) {
           await Refund.updateOne({ _id: created._id }, { $set: { membershipCreditRestored: true } });
         }

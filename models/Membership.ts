@@ -65,20 +65,24 @@ export async function MembershipModel(): Promise<Model<MembershipDoc>> {
 }
 
 /**
- * Restore a single membership credit for the user's most-recent PAID membership.
- * Atomically does: gamesUsed = max(0, gamesUsed - 1)
+ * Consume N membership credits for the user's most-recent PAID membership.
+ * Atomically caps at `games` (won't go past total).
  * Returns true if a document was updated.
  */
-export async function restoreOneMembershipCredit(userId: string): Promise<boolean> {
+export async function useMembershipCredits(userId: string, count = 1): Promise<boolean> {
   if (!userId) return false;
+  const n = Math.max(1, Math.floor(count));
   const Membership = await MembershipModel();
 
-  // Aggregation pipeline update (typed via UpdateWithAggregationPipeline)
+  // Aggregation pipeline update (atomic)
   const pipeline = [
     {
       $set: {
         gamesUsed: {
-          $max: [0, { $subtract: ["$gamesUsed", 1] }],
+          $min: [
+            "$games",
+            { $add: ["$gamesUsed", n] },
+          ],
         },
       },
     },
@@ -91,4 +95,41 @@ export async function restoreOneMembershipCredit(userId: string): Promise<boolea
   );
 
   return !!updated;
+}
+
+/**
+ * Restore N membership credits for the user's most-recent PAID membership.
+ * Atomically does: gamesUsed = max(0, gamesUsed - N)
+ * Returns true if a document was updated.
+ */
+export async function restoreMembershipCredits(userId: string, count = 1): Promise<boolean> {
+  if (!userId) return false;
+  const n = Math.max(1, Math.floor(count));
+  const Membership = await MembershipModel();
+
+  const pipeline = [
+    {
+      $set: {
+        gamesUsed: {
+          $max: [0, { $subtract: ["$gamesUsed", n] }],
+        },
+      },
+    },
+  ] as unknown as import("mongoose").UpdateWithAggregationPipeline;
+
+  const updated = await Membership.findOneAndUpdate(
+    { userId, status: "PAID" },
+    pipeline,
+    { new: true, sort: { createdAt: -1 } }
+  );
+
+  return !!updated;
+}
+
+/**
+ * Backward-compatible single-credit restore.
+ * Delegates to restoreMembershipCredits(userId, 1).
+ */
+export async function restoreOneMembershipCredit(userId: string): Promise<boolean> {
+  return restoreMembershipCredits(userId, 1);
 }

@@ -4,6 +4,7 @@ import { GuestBookingModel } from "@/models/GuestBooking";
 import CancelButton from "./CancelButton";
 import MarkPaidButton from "./MarkPaidButton";
 import AddBookingButton from "./AddBookingButton";
+import ClearAllBookingsButton from "./ClearAllBookingsButton"; // ⬅️ NEW
 
 type SearchParams = {
   q?: string;   // search by name/email (for guest, only name)
@@ -243,6 +244,8 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
           <a className="btn btn--primary" href={exportHref} aria-label="Export bookings to Excel">
             Export to Excel
           </a>
+          {/* ⬇️ Clear filtered/all bookings from table & DB */}
+          <ClearAllBookingsButton q={q} date={date} />
         </div>
       </div>
 

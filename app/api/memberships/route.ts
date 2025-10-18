@@ -5,10 +5,10 @@ import { UserModel } from "@/models/User";
 
 function planDefaults(planId: "1M" | "3M" | "6M") {
   switch (planId) {
-    case "1M": return { durationMonths: 1, planName: "1 month", games: 30 };
-    case "3M": return { durationMonths: 3, planName: "3 months", games: 90 };
-    case "6M": return { durationMonths: 6, planName: "6 months", games: 180 };
-    default:   return { durationMonths: 1, planName: "1 month", games: 30 };
+    case "1M": return { durationMonths: 1, planName: "1 month", games: 25 };
+    case "3M": return { durationMonths: 3, planName: "3 months", games: 75 };
+    case "6M": return { durationMonths: 6, planName: "6 months", games: 150 };
+    default:   return { durationMonths: 1, planName: "1 month", games: 25 };
   }
 }
 
@@ -21,7 +21,7 @@ type ListQuery = {
   >;
 };
 
-// List memberships (unchanged style)
+// GET: list memberships
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const q = (url.searchParams.get("q") || "").trim();
@@ -42,8 +42,7 @@ export async function GET(req: Request) {
   return NextResponse.json({ memberships: rows });
 }
 
-// Create membership (optionally PAID immediately)
-// Body: { userEmail, userName, userId?(username), planId: "1M"|"3M"|"6M", amount, paidNow?: boolean }
+// POST: create membership (optionally PAID immediately)
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -82,7 +81,7 @@ export async function POST(req: Request) {
       gamesUsed: 0,
       planId,
       planName: d.planName,
-      status: paidNow ? "PAID" : "PENDING",  // 👈 create as PAID if requested
+      status: paidNow ? "PAID" : "PENDING",
       userEmail,
       userId: String(user._id),
       userName,
@@ -91,6 +90,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, membershipId: String(doc._id), status: doc.status }, { status: 201 });
   } catch (e: unknown) {
     console.error("Create membership error:", e);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+// DELETE: remove ALL memberships (use with caution)
+export async function DELETE() {
+  try {
+    const Membership = await MembershipModel();
+    const r = await Membership.deleteMany({});
+    return NextResponse.json({ ok: true, deletedCount: r.deletedCount ?? 0 });
+  } catch (e) {
+    console.error("Clear memberships error:", e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }

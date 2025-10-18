@@ -27,7 +27,7 @@ export default function AddMembershipGlobalButton() {
 
   // step 2: plan + amount
   const [planId, setPlanId] = useState<Plan>("1M");
-  const [amount, setAmount] = useState<number>(5000);
+  const [amount, setAmount] = useState<number>(2999);
 
   // status
   const [saving, setSaving] = useState(false);
@@ -35,9 +35,9 @@ export default function AddMembershipGlobalButton() {
 
   // default amount per plan
   useEffect(() => {
-    if (planId === "1M") setAmount(5000);
-    if (planId === "3M") setAmount(12000);
-    if (planId === "6M") setAmount(20000);
+    if (planId === "1M") setAmount(2999);
+    if (planId === "3M") setAmount(8999);
+    if (planId === "6M") setAmount(17999);
   }, [planId]);
 
   // fetch users when typing
@@ -237,9 +237,9 @@ export default function AddMembershipGlobalButton() {
                 <div>
                   <label className="label">Plan</label>
                   <select className="input" value={planId} onChange={(e) => setPlanId(e.target.value as Plan)}>
-                    <option value="1M">1M (30 games)</option>
-                    <option value="3M">3M (90 games)</option>
-                    <option value="6M">6M (180 games)</option>
+                    <option value="1M">1M (25 games)</option>
+                    <option value="3M">3M (75 games)</option>
+                    <option value="6M">6M (150 games)</option>
                   </select>
                 </div>
                 <div>
