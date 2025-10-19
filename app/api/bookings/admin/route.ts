@@ -5,8 +5,7 @@ import { GuestBookingModel } from "@/models/GuestBooking";
 import { MembershipModel } from "@/models/Membership";
 import { UserModel } from "@/models/User";
 
-const SLOT_PRICE = 500; // INR per slot for non-members
-
+// 🔁 Unique admin order ids
 function genAdminOrderId() {
   return `admin_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -24,6 +23,24 @@ type AdminCreateBody = {
   guestName?: string;
   guestPhone?: string;
 };
+
+/**
+ * Parse "YYYY-MM-DD" to a UTC Date (midnight) and return the day of week using UTC (0=Sun, 6=Sat).
+ * This avoids timezone ambiguity from Date("YYYY-MM-DD") which can shift days based on server TZ.
+ */
+function getUTCDayFromYMD(ymd: string): number {
+  const [y, m, d] = ymd.split("-").map((v) => Number(v));
+  if (!y || !m || !d) return NaN;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCDay(); // 0 (Sun) .. 6 (Sat)
+}
+
+/** Weekend pricing: Sat/Sun = 700, otherwise 500 */
+function getSlotPrice(dateYMD: string): number {
+  const dow = getUTCDayFromYMD(dateYMD);
+  if (Number.isNaN(dow)) return 500; // safe fallback
+  return dow === 0 || dow === 6 ? 700 : 500;
+}
 
 export async function POST(req: Request) {
   try {
@@ -63,7 +80,8 @@ export async function POST(req: Request) {
 
     // ---- billing ----
     const slotsCount = Math.max(1, slots.length); // credits to consume for members
-    const totalAmount = isMember ? 0 : Number(slotsCount * SLOT_PRICE);
+    const perSlot = getSlotPrice(date);           // 500 weekdays, 700 weekends
+    const totalAmount = isMember ? 0 : Number(slotsCount * perSlot);
     const currency = "INR";
 
     // adminPaid: members + “Create & Mark Paid” => true; “Create (Pending)” => false
@@ -83,8 +101,7 @@ export async function POST(req: Request) {
     // -----------------------------------------------------------------------
     // MEMBERSHIP CREDIT GUARD (1 per slot) — Block if not enough credits
     // -----------------------------------------------------------------------
-    // We RESERVE credits first (atomic) and only then create the booking.
-    // If booking creation fails, we roll back the reservation.
+    // Reserve credits atomically; roll back if booking creation fails.
     let reservedCredits = false;
     let memberUserObjectId = "";
 

@@ -6,6 +6,15 @@ import { useEffect, useMemo, useState } from "react";
 type UserLite = { _id: string; userId?: string; name?: string; email?: string; phone?: string };
 type Plan = "1M" | "3M" | "6M";
 
+// Payload sent by the Memberships page "Restore" button
+type PrefillEventDetail = {
+  _id: string;
+  userId?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+};
+
 function useDebouncedValue<T>(val: T, ms = 300) {
   const [v, setV] = useState(val);
   useEffect(() => {
@@ -33,7 +42,7 @@ export default function AddMembershipGlobalButton() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // default amount per plan
+  // default amount per plan (₹2999 / ₹8999 / ₹17999)
   useEffect(() => {
     if (planId === "1M") setAmount(2999);
     if (planId === "3M") setAmount(8999);
@@ -76,12 +85,37 @@ export default function AddMembershipGlobalButton() {
     return () => { abort = true; };
   }, [debounced, open]);
 
+  // Listen for "Restore" open event from Memberships page to prefill user
+  useEffect(() => {
+    function onOpenAddMembership(e: Event) {
+      const ce = e as CustomEvent<PrefillEventDetail>;
+      const d = ce.detail;
+      if (!d || !d._id) return;
+      // open and prefill user
+      setSelected({
+        _id: d._id,
+        userId: d.userId,
+        name: d.name,
+        email: d.email,
+        phone: d.phone,
+      });
+      setQuery("");
+      setResults([]);
+      setErr(null);
+      setSaving(false);
+      setOpen(true);
+    }
+
+    window.addEventListener("open-add-membership", onOpenAddMembership as EventListener);
+    return () => window.removeEventListener("open-add-membership", onOpenAddMembership as EventListener);
+  }, []);
+
   function resetAll() {
     setQuery("");
     setResults([]);
     setSelected(null);
     setPlanId("1M");
-    setAmount(5000);
+    setAmount(2999); // 👈 FIXED: was 5000 earlier
     setSaving(false);
     setErr(null);
   }
@@ -178,7 +212,7 @@ export default function AddMembershipGlobalButton() {
                 <input
                   className="input"
                   placeholder="Start typing to search…"
-                  value={query}
+                  value={selected ? "" : query}
                   onChange={(e) => { setQuery(e.target.value); setSelected(null); }}
                 />
                 {/* Dropdown results */}

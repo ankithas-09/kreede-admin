@@ -1,6 +1,7 @@
 // app/refunds/page.tsx
 import { RefundModel } from "@/models/Refund";
 import { EventRefundModel } from "@/models/EventRefund";
+import ClearButton from "./ClearButton";
 
 export const dynamic = "force-dynamic"; // ensure fresh read on each request
 
@@ -72,7 +73,9 @@ export default async function RefundsPage() {
     <div className="dash-wrap" style={{ paddingBottom: 24 }}>
       <header className="dash-topbar">
         <div className="dash-title">Refunds</div>
-        <div className="dash-actions">
+        <div className="dash-actions" style={{ display: "flex", gap: 8 }}>
+          {/* Optional global clear for both tables at once */}
+          <ClearButton kind="all" label="Clear All Refunds" title="Clear court + event refunds" />
           <a
             href="/dashboard"
             className="btn"
@@ -85,10 +88,11 @@ export default async function RefundsPage() {
 
       {/* Court Refunds */}
       <section className="card" style={{ maxWidth: "100%", marginBottom: 16 }}>
-        <div className="card__header">
+        <div className="card__header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 className="card__title" style={{ marginBottom: 8 }}>
             Court Refunds
           </h2>
+          <ClearButton kind="court" label="Clear Court Refunds" title="Delete all court refunds" />
         </div>
         <div className="card__body">
           <div className="table-wrap" style={{ maxHeight: 420, overflow: "auto" }}>
@@ -127,15 +131,13 @@ export default async function RefundsPage() {
 
       {/* Event Refunds */}
       <section className="card" style={{ maxWidth: "100%" }}>
-        <div className="card__header">
+        <div className="card__header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 className="card__title" style={{ marginBottom: 8 }}>
             Event Refunds
           </h2>
+          <ClearButton kind="event" label="Clear Event Refunds" title="Delete all event refunds" />
         </div>
         <div className="card__body">
-          <form className="toolbar" method="get" style={{ marginBottom: 10 }}>
-            {/* Example: you can add a filter by eventTitle here later */}
-          </form>
           <div className="table-wrap" style={{ maxHeight: 420, overflow: "auto" }}>
             <table className="table">
               <thead>

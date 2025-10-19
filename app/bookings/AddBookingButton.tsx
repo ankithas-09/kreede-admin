@@ -24,9 +24,28 @@ type AdminBookingBody = {
 };
 
 const COURTS = [1, 2, 3];
-const SLOT_PRICE = 500; // INR per hour for non-members
 const SLOT_START_HOUR = 6;   // 6:00
 const SLOT_END_HOUR = 23;    // 23:00 (11pm)
+
+/** Parse "YYYY-MM-DD" as UTC midnight, return UTC day (0=Sun..6=Sat) */
+function getUTCDayFromYMD(ymd: string): number {
+  const [y, m, d] = ymd.split("-").map((v) => Number(v));
+  if (!y || !m || !d) return NaN;
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+/** Weekend price (Sat/Sun) ₹700, Weekday ₹500 */
+function pricePerSlot(dateYMD: string | ""): number {
+  if (!dateYMD) return 500; // default fallback
+  const dow = getUTCDayFromYMD(dateYMD);
+  if (Number.isNaN(dow)) return 500;
+  return dow === 0 || dow === 6 ? 700 : 500;
+}
+function dayLabel(dateYMD: string | ""): string | null {
+  if (!dateYMD) return null;
+  const dow = getUTCDayFromYMD(dateYMD);
+  if (Number.isNaN(dow)) return null;
+  return ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dow] || null;
+}
 
 function hhmm(h: number) {
   return `${String(h).padStart(2, "0")}:00`;
@@ -68,7 +87,6 @@ export default function AddBookingButton() {
 
   // availability
   const [availability, setAvailability] = useState<Availability>({});
-  
   const [loadingAvail, setLoadingAvail] = useState(false);
 
   // submit state
@@ -187,7 +205,8 @@ export default function AddBookingButton() {
   }
 
   const totalSlots = selected.length;
-  const totalAmount = who === "member" ? 0 : totalSlots * SLOT_PRICE;
+  const perSlot = who === "member" ? 0 : pricePerSlot(date);
+  const totalAmount = who === "member" ? 0 : totalSlots * perSlot;
 
   function resetAll() {
     setWho("member");
@@ -235,8 +254,6 @@ export default function AddBookingButton() {
       };
 
       // Explicit paymentRef hint so backend can persist the exact state:
-      // - Members always "MEMBERSHIP" and treated as paid
-      // - Non-members: PAID.CASH vs UNPAID.CASH
       if (who === "member") {
         body.paymentRef = "MEMBERSHIP";
       } else {
@@ -272,6 +289,13 @@ export default function AddBookingButton() {
       setSaving(false);
     }
   }
+
+  const day = dayLabel(date);
+  const weekend = (() => {
+    if (!date) return false;
+    const dow = getUTCDayFromYMD(date);
+    return dow === 0 || dow === 6;
+  })();
 
   return (
     <>
@@ -346,6 +370,14 @@ export default function AddBookingButton() {
                       value={date}
                       onChange={(e) => setDate(e.target.value)}
                     />
+                    {/* per-slot price & day hint */}
+                    {date && (
+                      <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
+                        {day ? `${day}` : "Selected date"} •{" "}
+                        <b>₹{pricePerSlot(date)}/slot</b>
+                        {weekend && <span> (weekend pricing)</span>}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -485,7 +517,11 @@ export default function AddBookingButton() {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
                 <div className="badge">
                   {totalSlots} slot{totalSlots === 1 ? "" : "s"}
-                  {who !== "member" && <> • Total: ₹{totalAmount}</>}
+                  {who !== "member" && (
+                    <>
+                      {" "}• ₹{perSlot}/slot • Total: <b>₹{totalAmount}</b>
+                    </>
+                  )}
                 </div>
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
