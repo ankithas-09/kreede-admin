@@ -260,7 +260,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
             aria-label="Search bookings by name or email"
             style={{ flex: 2, minWidth: 160 }}
           />
-          <input
+        <input
             type="date"
             name="date"
             defaultValue={date}
@@ -290,34 +290,41 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, idx) => (
-                <tr key={`${r.bookingId}-${idx}`}>
-                  <td>{r.userName}</td>
-                  <td>{r.userEmail}</td>
-                  <td>{r.date}</td>
-                  <td>{paymentBadge(r.adminPaid, r.paymentRef)}</td>
-                  <td>{amountDisplay(r.amount, r.currency)}</td>
-                  <td>{r.courtId == null ? "—" : r.courtId}</td>
-                  <td>{r.start}</td>
-                  <td>{r.end}</td>
-                  <td>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      {r.slotIndex >= 0 && (
-                        <CancelButton
-                          bookingId={r.bookingId}
-                          slotIndex={r.slotIndex}
-                          courtId={r.courtId ?? undefined}
-                          start={r.start}
-                          end={r.end}
-                        />
-                      )}
-                      {!r.adminPaid && (
-                        <MarkPaidButton bookingId={r.bookingId} />
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r, idx) => {
+                // ⬇️ Minimal, localized guard: treat MEMBERSHIP and PAID.* as paid
+                const refUpper = String(r.paymentRef || "").toUpperCase();
+                const isPaidLike =
+                  r.adminPaid === true || refUpper === "MEMBERSHIP" || refUpper.startsWith("PAID.");
+
+                return (
+                  <tr key={`${r.bookingId}-${idx}`}>
+                    <td>{r.userName}</td>
+                    <td>{r.userEmail}</td>
+                    <td>{r.date}</td>
+                    <td>{paymentBadge(r.adminPaid, r.paymentRef)}</td>
+                    <td>{amountDisplay(r.amount, r.currency)}</td>
+                    <td>{r.courtId == null ? "—" : r.courtId}</td>
+                    <td>{r.start}</td>
+                    <td>{r.end}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {r.slotIndex >= 0 && (
+                          <CancelButton
+                            bookingId={r.bookingId}
+                            slotIndex={r.slotIndex}
+                            courtId={r.courtId ?? undefined}
+                            start={r.start}
+                            end={r.end}
+                          />
+                        )}
+                        {!isPaidLike && (
+                          <MarkPaidButton bookingId={r.bookingId} />
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
 
               {rows.length === 0 && (
                 <tr>
