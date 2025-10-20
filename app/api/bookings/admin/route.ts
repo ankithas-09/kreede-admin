@@ -21,7 +21,7 @@ type AdminCreateBody = {
   userName?: string;
   userEmail?: string;
   guestName?: string;
-  guestPhone?: string;
+  guestPhone?: string;        // phone collected in UI for guest
 };
 
 /**
@@ -158,6 +158,10 @@ export async function POST(req: Request) {
         const created = await GuestBooking.create({
           orderId,
           userName: guestName || "Guest",
+          // ⬇️ persist guest phone as phone_number in guest_bookings
+          phone_number: guestPhone,
+          // (optional) keep legacy mirror for any old code paths (safe to remove later):
+          // guestPhone,
           date,
           slots,
           amount: totalAmount,

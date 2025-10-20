@@ -1,71 +1,97 @@
 // app/bookings/page.tsx
 import { BookingModel } from "@/models/Booking";
 import { GuestBookingModel } from "@/models/GuestBooking";
+import { UserModel } from "@/models/User";
 import CancelButton from "./CancelButton";
 import MarkPaidButton from "./MarkPaidButton";
 import AddBookingButton from "./AddBookingButton";
-import ClearAllBookingsButton from "./ClearAllBookingsButton"; // ⬅️ NEW
+import ClearAllBookingsButton from "./ClearAllBookingsButton";
 
 type SearchParams = {
-  q?: string;   // search by name/email (for guest, only name)
-  date?: string; // YYYY-MM-DD
-};
-
-type MongoQuery = {
-  $or?: Array<
-    | { userName: { $regex: string; $options: string } }
-    | { userEmail: { $regex: string; $options: string } }
-  >;
+  q?: string;
   date?: string;
+  courtId?: string;
 };
 
 type BookingLean = {
   _id: string | { toString?: () => string };
+  userId?: string;
   userName?: string;
   userEmail?: string;
+  userPhone?: string;
   date?: string;
   slots?: Array<{ courtId?: number; start?: string; end?: string }>;
   amount?: number;
   currency?: string;
-  paymentRef?: string;   // e.g., "CASH" | "MEMBERSHIP" | "ONLINE"
-  adminPaid?: boolean;   // for admin-created
+  paymentRef?: string;
+  adminPaid?: boolean;
   createdAt?: Date | string;
 };
 
 type GuestBookingLean = {
   _id: string | { toString?: () => string };
-  userName?: string;     // guest name
+  userName?: string;
+  phone_number?: string;
+  guestPhone?: string;
   date?: string;
   slots?: Array<{ courtId?: number; start?: string; end?: string }>;
   amount?: number;
   currency?: string;
-  paymentRef?: string;   // "UNPAID.CASH" | "PAID.CASH"
-  adminPaid?: boolean;   // for display guard
+  paymentRef?: string;
+  adminPaid?: boolean;
   createdAt?: Date | string;
 };
 
 export default async function BookingsPage({ searchParams }: { searchParams: SearchParams }) {
   const Booking = await BookingModel();
   const GuestBooking = await GuestBookingModel();
+  const User = await UserModel();
 
   const q = (searchParams.q || "").trim();
-  const date = (searchParams.date || "").trim();
+  const dateFilter = (searchParams.date || "").trim();
+  const courtIdFilterRaw = (searchParams.courtId || "").trim();
+  const courtIdFilter = courtIdFilterRaw && !Number.isNaN(Number(courtIdFilterRaw))
+    ? Number(courtIdFilterRaw)
+    : null;
 
-  // Build query for normal bookings
-  const query: MongoQuery = {};
+  // Helper: check ObjectId
+  const isValidObjectIdString = (s: unknown) =>
+    typeof s === "string" && /^[0-9a-fA-F]{24}$/.test(s);
+
+  /** ---------------------------------------
+   * Build main bookings query
+   * ------------------------------------- */
+  const query: any = {};
+  const orParts: any[] = [];
+
   if (q) {
-    query.$or = [
-      { userName: { $regex: q, $options: "i" } },
-      { userEmail: { $regex: q, $options: "i" } },
-    ];
-  }
-  if (date) query.date = date;
+    orParts.push({ userName: { $regex: q, $options: "i" } });
+    orParts.push({ userPhone: { $regex: q, $options: "i" } });
 
-  // Fetch standard bookings
+    const looksLikePhone = /\d{4,}/.test(q.replace(/\s+/g, ""));
+    if (looksLikePhone) {
+      const matchedUsers = await User.find({ phone: { $regex: q, $options: "i" } })
+        .select({ _id: 1, userId: 1 })
+        .lean<{ _id: unknown; userId?: string }[]>();
+
+      if (matchedUsers.length) {
+        const idStrings = matchedUsers.map((u) => String(u._id));
+        const usernames = matchedUsers.map((u) => String(u.userId || "")).filter(Boolean);
+        if (idStrings.length) orParts.push({ userId: { $in: idStrings } });
+        if (usernames.length) orParts.push({ userId: { $in: usernames } });
+      }
+    }
+  }
+
+  if (orParts.length) query.$or = orParts;
+  if (dateFilter) query.date = dateFilter;
+
   const bookings = (await Booking.find(query)
     .select({
+      userId: 1,
       userName: 1,
       userEmail: 1,
+      userPhone: 1,
       date: 1,
       slots: 1,
       amount: 1,
@@ -77,16 +103,49 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     .sort({ createdAt: -1 })
     .lean()) as BookingLean[];
 
-  // Fetch guest bookings (search only by name + date)
-  const guestQuery: { $or?: Array<{ userName: { $regex: string; $options: string } }>; date?: string } = {};
-  if (q) {
-    guestQuery.$or = [{ userName: { $regex: q, $options: "i" } }];
+  /** ---------------------------------------
+   * Resolve user phone numbers
+   * ------------------------------------- */
+  const userIds = Array.from(new Set(bookings.map((b) => String(b.userId || "")).filter(Boolean)));
+  const idLike = userIds.filter(isValidObjectIdString);
+  const usernameLike = userIds.filter((v) => !isValidObjectIdString(v));
+
+  const usersForPhones = await User.find({
+    $or: [
+      ...(idLike.length ? [{ _id: { $in: idLike } }] : []),
+      ...(usernameLike.length ? [{ userId: { $in: usernameLike } }] : []),
+    ],
+  })
+    .select({ _id: 1, userId: 1, phone: 1 })
+    .lean();
+
+  const phoneByKey = new Map<string, string>();
+  for (const u of usersForPhones) {
+    const _idStr = String(u._id);
+    const uname = String(u.userId || "");
+    const phone = u.phone || "";
+    phoneByKey.set(_idStr, phone);
+    if (uname) phoneByKey.set(uname, phone);
   }
-  if (date) guestQuery.date = date;
+
+  /** ---------------------------------------
+   * Guest bookings
+   * ------------------------------------- */
+  const guestQuery: any = {};
+  if (q) {
+    guestQuery.$or = [
+      { userName: { $regex: q, $options: "i" } },
+      { phone_number: { $regex: q, $options: "i" } },
+      { guestPhone: { $regex: q, $options: "i" } },
+    ];
+  }
+  if (dateFilter) guestQuery.date = dateFilter;
 
   const guestBookings = (await GuestBooking.find(guestQuery)
     .select({
       userName: 1,
+      phone_number: 1,
+      guestPhone: 1,
       date: 1,
       slots: 1,
       amount: 1,
@@ -95,13 +154,15 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
       adminPaid: 1,
       createdAt: 1,
     })
-    .sort({ createdAt: -1 })
     .lean()) as GuestBookingLean[];
 
+  /** ---------------------------------------
+   * Merge and transform to rows
+   * ------------------------------------- */
   type Row = {
     bookingId: string;
     userName: string;
-    userEmail: string;
+    userPhone: string;
     date: string;
     amount: number | null;
     currency?: string;
@@ -111,87 +172,118 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     start: string;
     end: string;
     slotIndex: number;
-    createdAt: number; // for merged sorting desc
+    createdAt: number;
   };
+
+  const rows: Row[] = [];
 
   const toIdString = (v: string | { toString?: () => string }) =>
     typeof v === "string" ? v : v?.toString?.() || "";
 
-  const rows: Row[] = [];
-
-  // Normal bookings → rows
   for (const b of bookings) {
+    const phone =
+      (b.userId && phoneByKey.get(String(b.userId))) ||
+      b.userPhone ||
+      "—";
+
     const base = {
       bookingId: toIdString(b._id),
       userName: b.userName || "—",
-      userEmail: b.userEmail || "—",
+      userPhone: phone,
       date: b.date || "—",
-      amount: typeof b.amount === "number" ? b.amount : null,
-      currency: b.currency || undefined,
-      paymentRef: b.paymentRef || undefined,
+      amount: b.amount ?? null,
+      currency: b.currency,
+      paymentRef: b.paymentRef,
       adminPaid: b.adminPaid === true,
       createdAt: new Date(b.createdAt ?? Date.now()).getTime(),
     };
-    if (Array.isArray(b.slots) && b.slots.length) {
-      b.slots.forEach((s, idx) => {
+
+    if (b.slots?.length) {
+      b.slots.forEach((s, idx) =>
         rows.push({
           ...base,
-          courtId: typeof s?.courtId === "number" ? s.courtId : null,
-          start: s?.start || "—",
-          end: s?.end || "—",
+          courtId: s.courtId ?? null,
+          start: s.start || "—",
+          end: s.end || "—",
           slotIndex: idx,
-        });
-      });
+        })
+      );
     } else {
       rows.push({ ...base, courtId: null, start: "—", end: "—", slotIndex: -1 });
     }
   }
 
-  // Guest bookings → rows (no email)
   for (const g of guestBookings) {
+    const phone = g.phone_number || g.guestPhone || "—";
     const isPaid = String(g.paymentRef || "").toUpperCase().startsWith("PAID.");
     const base = {
       bookingId: toIdString(g._id),
       userName: g.userName || "—",
-      userEmail: "—",
+      userPhone: phone,
       date: g.date || "—",
-      amount: typeof g.amount === "number" ? g.amount : null,
-      currency: g.currency || undefined,
-      paymentRef: g.paymentRef || undefined, // "UNPAID.CASH" | "PAID.CASH"
-      adminPaid: isPaid,                      // for button visibility
+      amount: g.amount ?? null,
+      currency: g.currency,
+      paymentRef: g.paymentRef,
+      adminPaid: isPaid,
       createdAt: new Date(g.createdAt ?? Date.now()).getTime(),
     };
-    if (Array.isArray(g.slots) && g.slots.length) {
-      g.slots.forEach((s, idx) => {
+
+    if (g.slots?.length) {
+      g.slots.forEach((s, idx) =>
         rows.push({
           ...base,
-          courtId: typeof s?.courtId === "number" ? s.courtId : null,
-          start: s?.start || "—",
-          end: s?.end || "—",
+          courtId: s.courtId ?? null,
+          start: s.start || "—",
+          end: s.end || "—",
           slotIndex: idx,
-        });
-      });
+        })
+      );
     } else {
       rows.push({ ...base, courtId: null, start: "—", end: "—", slotIndex: -1 });
     }
   }
 
-  // Sort merged rows newest first (by createdAt desc)
-  rows.sort((a, b) => b.createdAt - a.createdAt);
+  /** ---------------------------------------
+   * Sorting: date asc → start asc
+   * ------------------------------------- */
+  const toMinutes = (hhmm: string) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+    if (!m) return Number.POSITIVE_INFINITY;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
 
-  // Export URL with current filters (still only standard bookings are exported)
-  const params = new URLSearchParams();
-  if (q) params.set("q", q);
-  if (date) params.set("date", date);
-  const exportHref = `/api/bookings/export${params.toString() ? `?${params.toString()}` : ""}`;
+  const parseDateValue = (d: string) => {
+    const date = new Date(d);
+    if (!isNaN(date.getTime())) return date.getTime();
+    return Number.MAX_SAFE_INTEGER;
+  };
 
+  const availableCourtIds = Array.from(
+    new Set(rows.map((r) => r.courtId).filter((v): v is number => v !== null))
+  ).sort((a, b) => a - b);
+
+  const filteredRows = courtIdFilter == null
+    ? rows
+    : rows.filter((r) => r.courtId === courtIdFilter);
+
+  filteredRows.sort((a, b) => {
+    const da = parseDateValue(a.date);
+    const db = parseDateValue(b.date);
+    if (da !== db) return da - db;
+
+    const ta = toMinutes(a.start);
+    const tb = toMinutes(b.start);
+    if (ta !== tb) return ta - tb;
+
+    return b.createdAt - a.createdAt;
+  });
+
+  /** ---------------------------------------
+   * UI Rendering
+   * ------------------------------------- */
   const amountDisplay = (a: number | null, cur?: string) =>
     a == null ? "—" : `${cur ? cur + " " : ""}${a}`;
 
-  // Robust payment badge:
-  // - If ref already like "UNPAID.CASH"/"PAID.CASH", show as-is and color by prefix
-  // - If ref is "MEMBERSHIP", always PAID.MEMBERSHIP
-  // - Else show UNPAID.<REF> or PAID.<REF> based on adminPaid
   const paymentBadge = (paid?: boolean, ref?: string) => {
     const refUpper = (ref || "").toUpperCase().trim();
     const hasPrefix = refUpper.startsWith("UNPAID.") || refUpper.startsWith("PAID.");
@@ -226,50 +318,83 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     );
   };
 
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (dateFilter) params.set("date", dateFilter);
+  if (courtIdFilter != null) params.set("courtId", String(courtIdFilter));
+  const exportHref = `/api/bookings/export${params.toString() ? `?${params.toString()}` : ""}`;
+
   return (
     <div className="card" style={{ maxWidth: "100%" }}>
       <div
         className="card__header"
-        style={{ display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between", flexWrap: "wrap" }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+        }}
       >
         <div>
-          <h1 className="card__title" style={{ marginBottom: 6 }}>Court Bookings</h1>
+          <h1 className="card__title" style={{ marginBottom: 6 }}>
+            Court Bookings
+          </h1>
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <AddBookingButton />
-          <a href="/dashboard" className="btn" style={{ background: "#fff", border: "1px solid rgba(17,17,17,0.12)" }}>
+          <a
+            href="/dashboard"
+            className="btn"
+            style={{ background: "#fff", border: "1px solid rgba(17,17,17,0.12)" }}
+          >
             ← Back to Dashboard
           </a>
-          <a className="btn btn--primary" href={exportHref} aria-label="Export bookings to Excel">
+          <a className="btn btn--primary" href={exportHref}>
             Export to Excel
           </a>
-          {/* ⬇️ Clear filtered/all bookings from table & DB */}
-          <ClearAllBookingsButton q={q} date={date} />
+          <ClearAllBookingsButton q={q} date={dateFilter} />
         </div>
       </div>
 
       <div className="card__body">
-        {/* Toolbar: search + date filter */}
-        <form className="toolbar" method="get">
+        <form className="toolbar" method="get" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <input
             name="q"
             defaultValue={q}
             className="input"
-            placeholder="Search by name or email…"
-            aria-label="Search bookings by name or email"
+            placeholder="Search by name or phone…"
             style={{ flex: 2, minWidth: 160 }}
           />
-        <input
+          <input
             type="date"
             name="date"
-            defaultValue={date}
+            defaultValue={dateFilter}
             className="input"
-            aria-label="Filter by date"
-            style={{ flex: 1, minWidth: 160 }}
+            style={{ flex: 1, minWidth: 140 }}
           />
-          <button className="btn btn--primary" type="submit">Apply</button>
-          <a href="/bookings" className="btn" style={{ background: "#fff", border: "1px solid rgba(17,17,17,0.12)" }}>
+          <select
+            name="courtId"
+            defaultValue={courtIdFilterRaw || ""}
+            className="input"
+            style={{ flex: 1, minWidth: 140 }}
+          >
+            <option value="">All Courts</option>
+            {availableCourtIds.map((cid) => (
+              <option key={cid} value={cid}>
+                Court {cid}
+              </option>
+            ))}
+          </select>
+          <button className="btn btn--primary" type="submit">
+            Apply
+          </button>
+          <a
+            href="/bookings"
+            className="btn"
+            style={{ background: "#fff", border: "1px solid rgba(17,17,17,0.12)" }}
+          >
             Reset
           </a>
         </form>
@@ -278,20 +403,19 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
           <table className="table">
             <thead>
               <tr>
-                <th style={{ minWidth: 180 }}>User Name</th>
-                <th style={{ minWidth: 260 }}>User Email</th>
-                <th style={{ minWidth: 120 }}>Date</th>
-                <th style={{ minWidth: 140 }}>Payment</th>
-                <th style={{ minWidth: 120 }}>Amount (total)</th>
-                <th style={{ minWidth: 90 }}>Court ID</th>
-                <th style={{ minWidth: 110 }}>Start</th>
-                <th style={{ minWidth: 110 }}>End</th>
-                <th style={{ minWidth: 180 }}>Actions</th>
+                <th>User Name</th>
+                <th>Phone</th>
+                <th>Date</th>
+                <th>Payment</th>
+                <th>Amount</th>
+                <th>Court ID</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, idx) => {
-                // ⬇️ Minimal, localized guard: treat MEMBERSHIP and PAID.* as paid
+              {filteredRows.map((r, idx) => {
                 const refUpper = String(r.paymentRef || "").toUpperCase();
                 const isPaidLike =
                   r.adminPaid === true || refUpper === "MEMBERSHIP" || refUpper.startsWith("PAID.");
@@ -299,11 +423,11 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
                 return (
                   <tr key={`${r.bookingId}-${idx}`}>
                     <td>{r.userName}</td>
-                    <td>{r.userEmail}</td>
+                    <td>{r.userPhone}</td>
                     <td>{r.date}</td>
                     <td>{paymentBadge(r.adminPaid, r.paymentRef)}</td>
                     <td>{amountDisplay(r.amount, r.currency)}</td>
-                    <td>{r.courtId == null ? "—" : r.courtId}</td>
+                    <td>{r.courtId ?? "—"}</td>
                     <td>{r.start}</td>
                     <td>{r.end}</td>
                     <td>
@@ -317,19 +441,20 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
                             end={r.end}
                           />
                         )}
-                        {!isPaidLike && (
-                          <MarkPaidButton bookingId={r.bookingId} />
-                        )}
+                        {!isPaidLike && <MarkPaidButton bookingId={r.bookingId} />}
                       </div>
                     </td>
                   </tr>
                 );
               })}
 
-              {rows.length === 0 && (
+              {filteredRows.length === 0 && (
                 <tr>
                   <td colSpan={9} style={{ textAlign: "center", padding: "18px" }}>
-                    No bookings found{q ? ` for “${q}”` : ""}{date ? ` on ${date}` : ""}.
+                    No bookings found
+                    {q ? ` for “${q}”` : ""}
+                    {dateFilter ? ` on ${dateFilter}` : ""}
+                    {courtIdFilter != null ? ` for Court ${courtIdFilter}` : ""}.
                   </td>
                 </tr>
               )}

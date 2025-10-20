@@ -7,6 +7,11 @@ export interface GuestBookingDoc extends mongoose.Document {
   orderId?: string;
   userName?: string;
 
+  // ⬇️ NEW: persist guest phone in the canonical field
+  phone_number?: string;
+  // (optional legacy mirror, if any old code still touches it)
+  guestPhone?: string;
+
   date: string; // YYYY-MM-DD
   slots: { courtId: number; start: string; end: string }[];
 
@@ -33,6 +38,10 @@ const GuestBookingSchema = new Schema<GuestBookingDoc>(
   {
     orderId:    { type: String, index: true }, // unique when present
     userName:   { type: String },
+
+    // ⬇️ NEW fields
+    phone_number: { type: String, trim: true, index: true },
+    guestPhone:   { type: String, trim: true }, // optional legacy alias
 
     date:       { type: String, required: true, index: true },
     slots:      { type: [SlotSchema], default: [] },
