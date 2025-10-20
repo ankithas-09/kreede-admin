@@ -21,6 +21,9 @@ export interface MembershipDoc {
   userEmail: string;
   userName?: string;
 
+  // NEW: 7-digit member id (last 4 digits of aadhar + 3-digit sequence)
+  memberId?: string;
+
   paymentRaw?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
@@ -28,7 +31,6 @@ export interface MembershipDoc {
 
 const MembershipSchema = new Schema<MembershipDoc>(
   {
-    // ⬇️ Removed inline index to avoid duplicate with the unique index below
     orderId:        { type: String, required: true },
     amount:         { type: Number, required: true },
     currency:       { type: String, default: "INR" },
@@ -47,6 +49,9 @@ const MembershipSchema = new Schema<MembershipDoc>(
     userEmail:      { type: String, required: true, lowercase: true, index: true },
     userName:       { type: String },
 
+    // NEW: enforce 7 digits and keep unique+sparse so older rows without memberId are fine
+    memberId:       { type: String, trim: true, match: [/^\d{7}$/, "memberId must be 7 digits"], index: { unique: true, sparse: true } },
+
     paymentRaw:     { type: Schema.Types.Mixed },
   },
   { collection: "memberships", timestamps: true, strict: true }
@@ -54,7 +59,6 @@ const MembershipSchema = new Schema<MembershipDoc>(
 
 // helpful compound indexes
 MembershipSchema.index({ userId: 1, status: 1, createdAt: -1 });
-// keep the unique index for orderId here (no inline index above)
 MembershipSchema.index({ orderId: 1 }, { unique: true });
 
 const MODEL_NAME = "Membership";
@@ -66,23 +70,17 @@ export async function MembershipModel(): Promise<Model<MembershipDoc>> {
 
 /**
  * Consume N membership credits for the user's most-recent PAID membership.
- * Atomically caps at `games` (won't go past total).
- * Returns true if a document was updated.
  */
 export async function useMembershipCredits(userId: string, count = 1): Promise<boolean> {
   if (!userId) return false;
   const n = Math.max(1, Math.floor(count));
   const Membership = await MembershipModel();
 
-  // Aggregation pipeline update (atomic)
   const pipeline = [
     {
       $set: {
         gamesUsed: {
-          $min: [
-            "$games",
-            { $add: ["$gamesUsed", n] },
-          ],
+          $min: ["$games", { $add: ["$gamesUsed", n] }],
         },
       },
     },
@@ -99,8 +97,6 @@ export async function useMembershipCredits(userId: string, count = 1): Promise<b
 
 /**
  * Restore N membership credits for the user's most-recent PAID membership.
- * Atomically does: gamesUsed = max(0, gamesUsed - N)
- * Returns true if a document was updated.
  */
 export async function restoreMembershipCredits(userId: string, count = 1): Promise<boolean> {
   if (!userId) return false;
@@ -126,10 +122,6 @@ export async function restoreMembershipCredits(userId: string, count = 1): Promi
   return !!updated;
 }
 
-/**
- * Backward-compatible single-credit restore.
- * Delegates to restoreMembershipCredits(userId, 1).
- */
 export async function restoreOneMembershipCredit(userId: string): Promise<boolean> {
   return restoreMembershipCredits(userId, 1);
 }

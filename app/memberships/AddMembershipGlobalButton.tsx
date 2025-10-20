@@ -34,9 +34,10 @@ export default function AddMembershipGlobalButton() {
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [selected, setSelected] = useState<UserLite | null>(null);
 
-  // step 2: plan + amount
+  // step 2: plan + amount + aadhar
   const [planId, setPlanId] = useState<Plan>("1M");
   const [amount, setAmount] = useState<number>(2999);
+  const [aadhar, setAadhar] = useState<string>(""); // NEW
 
   // status
   const [saving, setSaving] = useState(false);
@@ -103,6 +104,7 @@ export default function AddMembershipGlobalButton() {
       setResults([]);
       setErr(null);
       setSaving(false);
+      setAadhar(""); // reset aadhar on prefill open
       setOpen(true);
     }
 
@@ -115,9 +117,14 @@ export default function AddMembershipGlobalButton() {
     setResults([]);
     setSelected(null);
     setPlanId("1M");
-    setAmount(2999); // 👈 FIXED: was 5000 earlier
+    setAmount(2999);
+    setAadhar("");
     setSaving(false);
     setErr(null);
+  }
+
+  function isValidAadhar(s: string) {
+    return /^\d{12}$/.test(s);
   }
 
   async function createPaid() {
@@ -127,6 +134,10 @@ export default function AddMembershipGlobalButton() {
     }
     if (!selected.email) {
       setErr("Selected user has no email.");
+      return;
+    }
+    if (!isValidAadhar(aadhar)) {
+      setErr("Enter a valid 12-digit Aadhar number.");
       return;
     }
 
@@ -142,12 +153,13 @@ export default function AddMembershipGlobalButton() {
           userEmail: (selected.email || "").toLowerCase(),
           planId,
           amount,
-          paidNow: true, // 👈 create as PAID
+          paidNow: true,     // create as PAID
+          aadhar,            // NEW
         }),
       });
-      const j: unknown = await res.json().catch(() => ({}));
+      const j: any = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const msg = (j as { error?: string })?.error || "Failed to create membership";
+        const msg = j?.error || "Failed to create membership";
         setErr(msg);
         setSaving(false);
         return;
@@ -196,7 +208,7 @@ export default function AddMembershipGlobalButton() {
           >
             <div className="card__header">
               <h3 className="card__title">Add Membership</h3>
-              <p className="card__subtitle">Search a user, choose plan, then mark paid.</p>
+              <p className="card__subtitle">Search a user, enter Aadhar, choose plan, then mark paid.</p>
             </div>
 
             <div className="card__body">
@@ -266,8 +278,27 @@ export default function AddMembershipGlobalButton() {
                 )}
               </div>
 
-              {/* Step 2: plan + amount */}
+              {/* Step 2: Aadhar + plan + amount */}
               <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <label className="label">Aadhar (12 digits)</label>
+                  <input
+                    className="input"
+                    inputMode="numeric"
+                    pattern="^\d{12}$"
+                    maxLength={12}
+                    placeholder="Enter 12-digit Aadhar"
+                    value={aadhar}
+                    onChange={(e) => {
+                      const next = e.target.value.replace(/\D/g, "").slice(0, 12);
+                      setAadhar(next);
+                    }}
+                  />
+                  <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+                    Must be exactly 12 digits. Saved to the user profile.
+                  </div>
+                </div>
+
                 <div>
                   <label className="label">Plan</label>
                   <select className="input" value={planId} onChange={(e) => setPlanId(e.target.value as Plan)}>

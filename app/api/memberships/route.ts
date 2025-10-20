@@ -5,10 +5,10 @@ import { UserModel } from "@/models/User";
 
 function planDefaults(planId: "1M" | "3M" | "6M") {
   switch (planId) {
-    case "1M": return { durationMonths: 1, planName: "1 month", games: 25 };
+    case "1M": return { durationMonths: 1, planName: "1 month",  games: 25 };
     case "3M": return { durationMonths: 3, planName: "3 months", games: 75 };
     case "6M": return { durationMonths: 6, planName: "6 months", games: 150 };
-    default:   return { durationMonths: 1, planName: "1 month", games: 25 };
+    default:   return { durationMonths: 1, planName: "1 month",  games: 25 };
   }
 }
 
@@ -42,16 +42,53 @@ export async function GET(req: Request) {
   return NextResponse.json({ memberships: rows });
 }
 
+// helper: generate memberId based on last 4 aadhar digits and next 3-digit sequence
+async function generateMemberId(last4: string): Promise<string> {
+  // Find the highest existing memberId with this prefix from Users and Memberships
+  const User = await UserModel();
+  const Membership = await MembershipModel();
+
+  const re = new RegExp(`^${last4}\\d{3}$`);
+
+  const [uTop] = await User.find({ memberId: re })
+    .select({ memberId: 1 })
+    .sort({ memberId: -1 })
+    .limit(1)
+    .lean();
+
+  const [mTop] = await Membership.find({ memberId: re })
+    .select({ memberId: 1 })
+    .sort({ memberId: -1 })
+    .limit(1)
+    .lean();
+
+  const candidates = [uTop?.memberId, mTop?.memberId].filter(Boolean) as string[];
+  let maxSeq = 0;
+  for (const mid of candidates) {
+    const seq = parseInt(mid.slice(4), 10);
+    if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
+  }
+
+  const nextSeq = (maxSeq + 1).toString().padStart(3, "0");
+  return `${last4}${nextSeq}`; // 7 digits
+}
+
 // POST: create membership (optionally PAID immediately)
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const userId   = (body.userId || "").trim();
-    const userEmail= (body.userEmail || "").trim().toLowerCase();
-    const userName = (body.userName || "").trim();
-    const planId   = (body.planId || "1M").trim().toUpperCase();
-    const amount   = Number(body.amount || 0);
-    const paidNow  = Boolean(body.paidNow);
+
+    const userId    = (body.userId || "").trim();
+    const userEmail = (body.userEmail || "").trim().toLowerCase();
+    const userName  = (body.userName || "").trim();
+    const planId    = (body.planId || "1M").trim().toUpperCase();
+    const amount    = Number(body.amount || 0);
+    const paidNow   = Boolean(body.paidNow);
+
+    // NEW: optional aadhar for generating memberId
+    const aadharRaw: string = String(body.aadhar || "").trim();
+    const hasAadhar = /^\d{12}$/.test(aadharRaw);
+    const last4 = hasAadhar ? aadharRaw.slice(-4) : "";
 
     if (!userEmail || !userName) {
       return NextResponse.json({ error: "userEmail and userName are required." }, { status: 400 });
@@ -67,6 +104,24 @@ export async function POST(req: Request) {
     const user = await User.findOne({ $or: [{ userId }, { email: userEmail }] }).lean();
     if (!user) {
       return NextResponse.json({ error: "User not found. Please create the user first." }, { status: 404 });
+    }
+
+    // Determine / generate memberId if we have aadhar
+    let memberIdToSave: string | undefined;
+    if (hasAadhar) {
+      // Generate next memberId with the prefix from aadhar last4
+      memberIdToSave = await generateMemberId(last4);
+
+      // Upsert aadhar and memberId on the user (do not break existing logic)
+      await User.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            aadhar: aadharRaw,
+            memberId: memberIdToSave,
+          },
+        }
+      );
     }
 
     const Membership = await MembershipModel();
@@ -85,9 +140,19 @@ export async function POST(req: Request) {
       userEmail,
       userId: String(user._id),
       userName,
+      // NEW: persist memberId on the membership if we generated one
+      ...(memberIdToSave ? { memberId: memberIdToSave } : {}),
     });
 
-    return NextResponse.json({ ok: true, membershipId: String(doc._id), status: doc.status }, { status: 201 });
+    return NextResponse.json(
+      {
+        ok: true,
+        membershipId: String(doc._id),
+        status: doc.status,
+        ...(memberIdToSave ? { memberId: memberIdToSave } : {}),
+      },
+      { status: 201 }
+    );
   } catch (e: unknown) {
     console.error("Create membership error:", e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

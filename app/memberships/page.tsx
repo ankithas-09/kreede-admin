@@ -1,6 +1,6 @@
 // app/memberships/page.tsx
 import AddMembershipGlobalButton from "./AddMembershipGlobalButton";
-import RestoreMembershipButton from "./RestoreMembershipButton"; // ⬅️ NEW
+import RestoreMembershipButton from "./RestoreMembershipButton";
 import { UserModel } from "@/models/User";
 import { MembershipModel } from "@/models/Membership";
 
@@ -27,6 +27,7 @@ type UserLean = {
   name?: string;
   email?: string;
   phone?: string;
+  memberId?: string; // NEW (if present on users)
   createdAt?: Date | string;
 };
 
@@ -43,6 +44,7 @@ type MembershipLean = {
   durationMonths?: number | string;
   games?: number;
   gamesUsed?: number;
+  memberId?: string; // NEW
 };
 
 const toIdString = (v: string | { toString?: () => string }) =>
@@ -62,11 +64,12 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
       { email:  { $regex: q, $options: "i" } },
       { phone:  { $regex: q, $options: "i" } },
       { userId: { $regex: q, $options: "i" } },
+      { memberId: { $regex: q, $options: "i" } }, // NEW
     ];
   }
 
   const users = (await User.find(userQuery)
-    .select({ userId: 1, name: 1, email: 1, phone: 1, createdAt: 1 })
+    .select({ userId: 1, name: 1, email: 1, phone: 1, memberId: 1, createdAt: 1 }) // NEW
     .sort({ createdAt: -1 })
     .limit(300)
     .lean()) as UserLean[];
@@ -87,6 +90,7 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
       userId: 1, userEmail: 1, userName: 1,
       planId: 1, planName: 1, amount: 1, currency: 1,
       status: 1, createdAt: 1, durationMonths: 1, games: 1, gamesUsed: 1,
+      memberId: 1, // NEW
     })
     .sort({ createdAt: -1 })
     .lean()) as MembershipLean[];
@@ -164,9 +168,9 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
             name="q"
             defaultValue={q}
             className="input"
-            placeholder="Search by name, email, phone or username…"
+            placeholder="Search by name, email, phone, username, or member ID…"
             aria-label="Search users"
-            style={{ flex: 2, minWidth: 220 }}
+            style={{ flex: 2, minWidth: 260 }}
           />
           <button className="btn btn--primary" type="submit">
             Search
@@ -185,6 +189,7 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
           <table className="table">
             <thead>
               <tr>
+                <th style={{ minWidth: 120 }}>Member ID</th> {/* NEW */}
                 <th style={{ minWidth: 140 }}>Username</th>
                 <th style={{ minWidth: 180 }}>Name</th>
                 <th style={{ minWidth: 240 }}>Email</th>
@@ -211,8 +216,11 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
                 const isExpired = m.status === "PAID" && new Date() >= m.end;
                 const statusText = m ? (m.isActive ? "ACTIVE" : "EXPIRED") : "—";
 
+                const memberId = m.memberId || u.memberId || "—"; // NEW
+
                 return (
                   <tr key={toIdString(u._id)}>
+                    <td>{memberId}</td>
                     <td>{u.userId || "—"}</td>
                     <td>{u.name || "—"}</td>
                     <td>{u.email || "—"}</td>
@@ -238,7 +246,6 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
                           {statusText}
                         </span>
 
-                        {/* Restore button: enabled only after end date */}
                         <RestoreMembershipButton
                           enabled={isExpired}
                           user={{
@@ -257,7 +264,7 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
 
               {usersWithPaidMembership.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={{ textAlign: "center", padding: "18px" }}>
+                  <td colSpan={10} style={{ textAlign: "center", padding: "18px" }}>
                     No members with purchased memberships{q ? ` for “${q}”` : ""}.
                   </td>
                 </tr>
