@@ -13,6 +13,7 @@
     "cookie": "^1.0.2",
     "exceljs": "^4.4.0",
     "file-saver": "^2.0.5",
+    "googleapis": "^164.1.0",
     "jose": "^6.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.19.1",

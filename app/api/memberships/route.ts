@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { MembershipModel } from "@/models/Membership";
 import { UserModel } from "@/models/User";
+import { upsertMembershipToSheet } from "@/lib/membershipSheets"; // ⬅️ NEW: Sheets sync
 
 function planDefaults(planId: "1M" | "3M" | "6M") {
   switch (planId) {
@@ -143,6 +144,14 @@ export async function POST(req: Request) {
       // NEW: persist memberId on the membership if we generated one
       ...(memberIdToSave ? { memberId: memberIdToSave } : {}),
     });
+
+    // ⬇️ NEW: Write/Upsert into Google Sheets right away
+    try {
+      await upsertMembershipToSheet(String(doc._id));
+    } catch (e) {
+      // Do not fail the API if Sheets is unreachable
+      console.error("Sheets sync (create) failed:", e);
+    }
 
     return NextResponse.json(
       {
