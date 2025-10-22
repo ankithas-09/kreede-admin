@@ -34,20 +34,29 @@ export default function AddMembershipGlobalButton() {
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [selected, setSelected] = useState<UserLite | null>(null);
 
-  // step 2: plan + amount + aadhar
+  // step 2: plan + amount + aadhar + newMember checkbox
   const [planId, setPlanId] = useState<Plan>("1M");
   const [amount, setAmount] = useState<number>(2999);
-  const [aadhar, setAadhar] = useState<string>(""); // NEW
+  const [aadhar, setAadhar] = useState<string>("");
+  const [newMember, setNewMember] = useState<boolean>(false); // NEW: checkbox state
 
   // status
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // default amount per plan (₹2999 / ₹8999 / ₹17999)
+  // Helper to get the base default per plan
+  function baseAmountForPlan(p: Plan) {
+    if (p === "1M") return 2999;
+    if (p === "3M") return 8999;
+    if (p === "6M") return 17999;
+    return 2999;
+  }
+
+  // When plan changes, reset amount to base + (newMember ? 500 : 0)
   useEffect(() => {
-    if (planId === "1M") setAmount(2999);
-    if (planId === "3M") setAmount(8999);
-    if (planId === "6M") setAmount(17999);
+    const base = baseAmountForPlan(planId);
+    setAmount(base + (newMember ? 500 : 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planId]);
 
   // fetch users when typing
@@ -119,12 +128,23 @@ export default function AddMembershipGlobalButton() {
     setPlanId("1M");
     setAmount(2999);
     setAadhar("");
+    setNewMember(false); // reset the checkbox
     setSaving(false);
     setErr(null);
   }
 
   function isValidAadhar(s: string) {
     return /^\d{12}$/.test(s);
+  }
+
+  // Toggle handler: adds/removes ₹500 on top of whatever is in the field
+  function onToggleNewMember(e: React.ChangeEvent<HTMLInputElement>) {
+    const checked = e.target.checked;
+    setNewMember(checked);
+    setAmount((prev) => {
+      const next = checked ? prev + 500 : Math.max(0, prev - 500);
+      return next;
+    });
   }
 
   async function createPaid() {
@@ -152,9 +172,9 @@ export default function AddMembershipGlobalButton() {
           userName: selected.name || "",
           userEmail: (selected.email || "").toLowerCase(),
           planId,
-          amount,
-          paidNow: true,     // create as PAID
-          aadhar,            // NEW
+          amount,           // includes +₹500 if newMember is checked
+          paidNow: true,    // create as PAID
+          aadhar,           // NEW
         }),
       });
       const j: any = await res.json().catch(() => ({}));
@@ -278,7 +298,7 @@ export default function AddMembershipGlobalButton() {
                 )}
               </div>
 
-              {/* Step 2: Aadhar + plan + amount */}
+              {/* Step 2: Aadhar + plan + amount + new member */}
               <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
                 <div style={{ gridColumn: "1 / -1" }}>
                   <label className="label">Aadhar (12 digits)</label>
@@ -301,12 +321,17 @@ export default function AddMembershipGlobalButton() {
 
                 <div>
                   <label className="label">Plan</label>
-                  <select className="input" value={planId} onChange={(e) => setPlanId(e.target.value as Plan)}>
+                  <select
+                    className="input"
+                    value={planId}
+                    onChange={(e) => setPlanId(e.target.value as Plan)}
+                  >
                     <option value="1M">1M (25 games)</option>
                     <option value="3M">3M (75 games)</option>
                     <option value="6M">6M (150 games)</option>
                   </select>
                 </div>
+
                 <div>
                   <label className="label">Amount (INR)</label>
                   <input
@@ -317,6 +342,23 @@ export default function AddMembershipGlobalButton() {
                     value={amount}
                     onChange={(e) => setAmount(Number(e.target.value))}
                   />
+                  <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+                    {newMember ? "Includes ₹500 new member fee." : "No new member fee applied."}
+                  </div>
+                </div>
+
+                {/* NEW: New member (+₹500) checkbox */}
+                <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    id="new-member"
+                    type="checkbox"
+                    checked={newMember}
+                    onChange={onToggleNewMember}
+                    style={{ width: 18, height: 18 }}
+                  />
+                  <label htmlFor="new-member" className="label" style={{ margin: 0, cursor: "pointer" }}>
+                    New member <span style={{ color: "#555" }}>(+₹500 one-time)</span>
+                  </label>
                 </div>
               </div>
 
