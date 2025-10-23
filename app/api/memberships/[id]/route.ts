@@ -1,7 +1,7 @@
 // app/api/memberships/[id]/route.ts
 import { NextResponse } from "next/server";
 import { MembershipModel } from "@/models/Membership";
-import { upsertMembershipToSheet } from "@/lib/membershipSheets"; // ⬅️ NEW
+import { appendMembershipToSheet } from "@/lib/membershipSheets"; // ✅ corrected import
 
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -22,12 +22,12 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
       if (!doc) return NextResponse.json({ error: "Membership not found" }, { status: 404 });
 
-      // ⬇️ NEW: sync/update the row in Google Sheets for this membership
+      // Sync/update the row in Google Sheets for this membership
       try {
-        await upsertMembershipToSheet(String(doc._id));
+        await appendMembershipToSheet(String(doc._id)); // ✅ corrected call
       } catch (e) {
         console.error("Sheets sync (mark paid) failed:", e);
-        // Do not fail the request if Sheets is unreachable
+        // Don't fail the request if Sheets is unreachable
       }
 
       return NextResponse.json({ ok: true });

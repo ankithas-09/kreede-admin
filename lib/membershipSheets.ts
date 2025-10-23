@@ -60,19 +60,13 @@ function columnLetter(n: number) {
   return s;
 }
 
-function columnLetterForHeader(headerName: HeaderKey) {
-  const idx = HEADER.indexOf(headerName);
-  if (idx === -1) throw new Error(`Header "${headerName}" not found.`);
-  return columnLetter(idx + 1); // 1-based for column letters
-}
-
 function addMonths(d: Date, months: number) {
   const t = new Date(d);
   t.setMonth(t.getMonth() + months);
   return t;
 }
 
-// ✅ New: format date as dd-MM-yyyy in Asia/Kolkata
+// dd-MM-yyyy in Asia/Kolkata
 function fmtDateDMY(d?: Date | string) {
   if (!d) return "";
   const x = new Date(d);
@@ -99,19 +93,16 @@ function rowFrom(
     "User Phone": opts.userPhone || "",
     Plan: m.planName || m.planId,
     "Amount (INR)": currencyINR(m.amount),
-    Start: fmtDateDMY(start), // ⬅️ dd-MM-yyyy IST
-    End: fmtDateDMY(end),     // ⬅️ dd-MM-yyyy IST
+    Start: fmtDateDMY(start),
+    End: fmtDateDMY(end),
     "Games Used": String(m.gamesUsed ?? 0),
     "Games Total": String(m.games ?? 0),
     Status: m.status,
   };
 }
 
-/**
- * Ensure we can access a spreadsheet + a valid sheet tab, and ensure the header row.
- * - Requires GOOGLE_SHEETS_SPREADSHEET_ID (we don't auto-create spreadsheets).
- * - Prefers the tab named SHEET_TITLE; otherwise uses the first tab.
- */
+/* ----------------------- Spreadsheet bootstrap ----------------------- */
+
 async function ensureSpreadsheet(): Promise<{ spreadsheetId: string; sheetName: string }> {
   const { sheets } = getClients();
   const envId = (process.env.GOOGLE_SHEETS_SPREADSHEET_ID || "").trim();
@@ -180,36 +171,7 @@ async function ensureSpreadsheet(): Promise<{ spreadsheetId: string; sheetName: 
   return { spreadsheetId: envId, sheetName };
 }
 
-/**
- * Find row index by a specific header column and value.
- * Returns the 1-based row number (2 for first data row) or null if not found.
- */
-async function findRowIndexByHeaderKey(
-  spreadsheetId: string,
-  sheetName: string,
-  headerName: HeaderKey,
-  key: string
-): Promise<number | null> {
-  const { sheets } = getClients();
-  const colLetter = columnLetterForHeader(headerName);
-  const ranges = [`${sheetName}!${colLetter}2:${colLetter}`, `${colLetter}2:${colLetter}`];
-  for (const range of ranges) {
-    try {
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range,
-        majorDimension: "COLUMNS",
-      });
-      const col = res.data.values?.[0] || [];
-      const idx = col.findIndex((v) => String(v).trim() === key.trim());
-      if (idx !== -1) return idx + 2; // data starts at row 2
-      return null;
-    } catch {
-      // try next
-    }
-  }
-  return null;
-}
+/* -------------------------- Row read/write utils -------------------------- */
 
 async function writeRow(
   spreadsheetId: string,
@@ -241,7 +203,44 @@ async function writeRow(
   }
 }
 
-async function updateRow(
+function columnLetterForHeader(headerName: HeaderKey) {
+  const idx = HEADER.indexOf(headerName);
+  if (idx === -1) throw new Error(`Header "${headerName}" not found.`);
+  return columnLetter(idx + 1); // 1-based
+}
+
+/** Return the **last** row number (2-based) for the given header=value, or null. */
+async function findLastRowIndexByHeaderKey(
+  spreadsheetId: string,
+  sheetName: string,
+  headerName: HeaderKey,
+  key: string
+): Promise<number | null> {
+  const { sheets } = getClients();
+  const colLetter = columnLetterForHeader(headerName);
+  const ranges = [`${sheetName}!${colLetter}2:${colLetter}`, `${colLetter}2:${colLetter}`];
+
+  for (const range of ranges) {
+    try {
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range,
+        majorDimension: "COLUMNS",
+      });
+      const col = (res.data.values?.[0] || []).map((v) => String(v).trim());
+      // find last match (renewals produce multiple matches)
+      for (let i = col.length - 1; i >= 0; i--) {
+        if (col[i] === key.trim()) return i + 2; // A2 is index 0
+      }
+      return null;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+async function updateRowByNumber(
   spreadsheetId: string,
   sheetName: string,
   rowNumber: number,
@@ -276,12 +275,30 @@ async function updateRow(
   }
 }
 
+/* ----------------------------- Public helpers ----------------------------- */
+
 /**
- * Upsert a single membership row.
- * - Uses "Member ID" as the primary key if present; otherwise falls back to "Email".
- * - Requires GOOGLE_SHEETS_SPREADSHEET_ID and that the sheet is shared with the service account (Editor).
+ * Always APPEND a brand-new row for a membership (used on create/restore).
+ * Never updates older rows — prevents overwriting previous periods.
  */
-export async function upsertMembershipToSheet(membershipId: string): Promise<void> {
+export async function appendMembershipToSheet(membershipId: string): Promise<void> {
+  const Membership = await MembershipModel();
+  const m = await Membership.findById(membershipId).lean<MembershipDoc | null>();
+  if (!m) return;
+
+  const User = await UserModel();
+  const u = await User.findById(m.userId).lean<{ phone?: string; aadhar?: string } | null>();
+
+  const { spreadsheetId, sheetName } = await ensureSpreadsheet();
+  const row = rowFrom(m, { aadhar: u?.aadhar, userPhone: u?.phone });
+  await writeRow(spreadsheetId, sheetName, row);
+}
+
+/**
+ * Update the **latest** row on the sheet for this membership's Member ID (or Email if no memberId).
+ * Used for live changes like gamesUsed so only the current period is modified.
+ */
+export async function updateLatestSheetRowForMembership(membershipId: string): Promise<void> {
   const Membership = await MembershipModel();
   const m = await Membership.findById(membershipId).lean<MembershipDoc | null>();
   if (!m) return;
@@ -292,17 +309,15 @@ export async function upsertMembershipToSheet(membershipId: string): Promise<voi
   const { spreadsheetId, sheetName } = await ensureSpreadsheet();
   const row = rowFrom(m, { aadhar: u?.aadhar, userPhone: u?.phone });
 
-  // Prefer Member ID, else Email
-  const hasMemberId = Boolean(m.memberId && String(m.memberId).trim());
-  const keyHeader: HeaderKey = hasMemberId ? "Member ID" : "Email";
-  const keyValue = hasMemberId ? String(m.memberId) : String(m.userEmail);
+  // prefer Member ID, else Email; and choose the LAST match (current period)
+  const keyHeader: HeaderKey = m.memberId ? "Member ID" : "Email";
+  const keyValue = m.memberId ? String(m.memberId) : String(m.userEmail);
 
-  const existingRowNumber =
-    keyValue ? await findRowIndexByHeaderKey(spreadsheetId, sheetName, keyHeader, keyValue) : null;
-
-  if (existingRowNumber) {
-    await updateRow(spreadsheetId, sheetName, existingRowNumber, row);
+  const rowNumber = await findLastRowIndexByHeaderKey(spreadsheetId, sheetName, keyHeader, keyValue);
+  if (rowNumber) {
+    await updateRowByNumber(spreadsheetId, sheetName, rowNumber, row);
   } else {
+    // if nothing found (e.g., sheet was cleared), append once
     await writeRow(spreadsheetId, sheetName, row);
   }
 }

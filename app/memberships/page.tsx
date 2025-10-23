@@ -248,6 +248,8 @@ export default async function MembershipsPage({ searchParams }: { searchParams: 
 
                         <RestoreMembershipButton
                           enabled={isExpired}
+                          createdAt={m.createdAt}                         
+                          durationMonths={Number(m.durationMonths || 0)}   
                           user={{
                             _id: toIdString(u._id),
                             userId: u.userId,

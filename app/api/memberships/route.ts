@@ -2,23 +2,28 @@
 import { NextResponse } from "next/server";
 import { MembershipModel } from "@/models/Membership";
 import { UserModel } from "@/models/User";
-import { upsertMembershipToSheet } from "@/lib/membershipSheets"; // ⬅️ NEW: Sheets sync
+import { appendMembershipToSheet } from "@/lib/membershipSheets";
+
 
 function planDefaults(planId: "1M" | "3M" | "6M") {
   switch (planId) {
-    case "1M": return { durationMonths: 1, planName: "1 month",  games: 25 };
-    case "3M": return { durationMonths: 3, planName: "3 months", games: 75 };
-    case "6M": return { durationMonths: 6, planName: "6 months", games: 150 };
-    default:   return { durationMonths: 1, planName: "1 month",  games: 25 };
+    case "1M":
+      return { durationMonths: 1, planName: "1 month", games: 25 };
+    case "3M":
+      return { durationMonths: 3, planName: "3 months", games: 75 };
+    case "6M":
+      return { durationMonths: 6, planName: "6 months", games: 150 };
+    default:
+      return { durationMonths: 1, planName: "1 month", games: 25 };
   }
 }
 
 type ListQuery = {
   $or?: Array<
     | { userEmail: { $regex: string; $options: string } }
-    | { userName:  { $regex: string; $options: string } }
-    | { userId:    { $regex: string; $options: string } }
-    | { planId:    { $regex: string; $options: string } }
+    | { userName: { $regex: string; $options: string } }
+    | { userId: { $regex: string; $options: string } }
+    | { planId: { $regex: string; $options: string } }
   >;
 };
 
@@ -33,9 +38,9 @@ export async function GET(req: Request) {
   if (q) {
     filter.$or = [
       { userEmail: { $regex: q, $options: "i" } },
-      { userName:  { $regex: q, $options: "i" } },
-      { userId:    { $regex: q, $options: "i" } },
-      { planId:    { $regex: q, $options: "i" } },
+      { userName: { $regex: q, $options: "i" } },
+      { userId: { $regex: q, $options: "i" } },
+      { planId: { $regex: q, $options: "i" } },
     ];
   }
 
@@ -45,7 +50,6 @@ export async function GET(req: Request) {
 
 // helper: generate memberId based on last 4 aadhar digits and next 3-digit sequence
 async function generateMemberId(last4: string): Promise<string> {
-  // Find the highest existing memberId with this prefix from Users and Memberships
   const User = await UserModel();
   const Membership = await MembershipModel();
 
@@ -71,26 +75,35 @@ async function generateMemberId(last4: string): Promise<string> {
   }
 
   const nextSeq = (maxSeq + 1).toString().padStart(3, "0");
-  return `${last4}${nextSeq}`; // 7 digits
+  return `${last4}${nextSeq}`; // 7 digits total
 }
 
-// POST: create membership (optionally PAID immediately)
+// POST: create membership (supports both new purchase and restore/renewal)
 export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    const userId    = (body.userId || "").trim();
-    const userEmail = (body.userEmail || "").trim().toLowerCase();
-    const userName  = (body.userName || "").trim();
-    const planId    = (body.planId || "1M").trim().toUpperCase();
-    const amount    = Number(body.amount || 0);
-    const paidNow   = Boolean(body.paidNow);
+    const userId = String(body.userId || "").trim();
+    const userEmail = String(body.userEmail || "").trim().toLowerCase();
+    const userName = String(body.userName || "").trim();
+    const planId = String(body.planId || "1M").trim().toUpperCase() as "1M" | "3M" | "6M";
+    const amount = Number(body.amount || 0);
+    const paidNow = Boolean(body.paidNow);
 
-    // NEW: optional aadhar for generating memberId
+    // Member identification:
+    // - New purchase: provide `aadhar` (12 digits) → generate new memberId
+    // - Restore/Renewal: provide `memberId` (7 digits) → reuse that ID; no aadhar required
     const aadharRaw: string = String(body.aadhar || "").trim();
-    const hasAadhar = /^\d{12}$/.test(aadharRaw);
-    const last4 = hasAadhar ? aadharRaw.slice(-4) : "";
+    const memberIdFromBody: string = String(body.memberId || "").trim();
 
+    const hasAadhar = /^\d{12}$/.test(aadharRaw);
+    const hasMemberId = /^\d{7}$/.test(memberIdFromBody);
+
+    // Optional hints from client to force append in Sheets
+    const mode: "restore" | "new" | undefined = body.mode;
+    const forceAppendFlag: boolean = Boolean(body.forceAppend);
+
+    // Validation
     if (!userEmail || !userName) {
       return NextResponse.json({ error: "userEmail and userName are required." }, { status: 400 });
     }
@@ -107,13 +120,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "User not found. Please create the user first." }, { status: 404 });
     }
 
-    // Determine / generate memberId if we have aadhar
+    // Work out the memberId to persist
     let memberIdToSave: string | undefined;
-    if (hasAadhar) {
-      // Generate next memberId with the prefix from aadhar last4
+
+    if (hasMemberId) {
+      // Restore path: trust provided 7-digit memberId (already assigned / being reused)
+      memberIdToSave = memberIdFromBody;
+      // Do NOT touch aadhar on restore
+    } else if (hasAadhar) {
+      // New purchase path: generate a fresh memberId using last 4 of aadhar
+      const last4 = aadharRaw.slice(-4);
       memberIdToSave = await generateMemberId(last4);
 
-      // Upsert aadhar and memberId on the user (do not break existing logic)
+      // Upsert aadhar and memberId on the user
       await User.updateOne(
         { _id: user._id },
         {
@@ -124,9 +143,10 @@ export async function POST(req: Request) {
         }
       );
     }
+    // else: neither provided → no memberId stored (legacy case)
 
     const Membership = await MembershipModel();
-    const d = planDefaults(planId as "1M" | "3M" | "6M");
+    const d = planDefaults(planId);
 
     const doc = await Membership.create({
       orderId: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -141,16 +161,18 @@ export async function POST(req: Request) {
       userEmail,
       userId: String(user._id),
       userName,
-      // NEW: persist memberId on the membership if we generated one
       ...(memberIdToSave ? { memberId: memberIdToSave } : {}),
     });
 
-    // ⬇️ NEW: Write/Upsert into Google Sheets right away
+    // Decide whether to always append a new row in Google Sheets (restore/renewal)
+    const isRestore = hasMemberId || mode === "restore" || forceAppendFlag;
+
+    // Sync to Google Sheets (append when restoring; normal upsert otherwise)
     try {
-      await upsertMembershipToSheet(String(doc._id));
+      await appendMembershipToSheet(String(doc._id));
     } catch (e) {
-      // Do not fail the API if Sheets is unreachable
       console.error("Sheets sync (create) failed:", e);
+      // Do not fail the API if Sheets is unreachable
     }
 
     return NextResponse.json(
