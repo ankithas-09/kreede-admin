@@ -10,6 +10,7 @@ type UserLite = {
   email?: string;
   phone?: string;
   memberId?: string; // may be present from some endpoints
+  dob?: string;      // ✅ NEW: used to compute age-based pricing
 };
 type Plan = "1M" | "3M" | "6M";
 
@@ -22,6 +23,7 @@ type PrefillEventDetail = {
     email?: string;
     phone?: string;
     memberId?: string; // optional: if page passes it, we’ll use it directly
+    dob?: string;      // optional
   };
   mode?: "restore" | "new";
 };
@@ -35,6 +37,18 @@ function useDebouncedValue<T>(val: T, ms = 300) {
   return v;
 }
 
+// ✅ Helper: parse DOB and compute age in years (integer), or null if unknown
+function calcAgeFromDob(dob?: string | null): number | null {
+  if (!dob) return null;
+  const d = new Date(dob);
+  if (Number.isNaN(d.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - d.getFullYear();
+  const m = today.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < d.getDate())) age--;
+  return age >= 0 && age < 200 ? age : null;
+}
+
 export default function AddMembershipGlobalButton() {
   const [open, setOpen] = useState(false);
 
@@ -45,9 +59,14 @@ export default function AddMembershipGlobalButton() {
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [selected, setSelected] = useState<UserLite | null>(null);
 
+  // 🔹 Resolved DOB + age (may come from search hit or fetched fresh)
+  const [resolvedDob, setResolvedDob] = useState<string | undefined>(undefined);
+  const age = useMemo(() => calcAgeFromDob(resolvedDob), [resolvedDob]);
+  const isChild = age !== null && age <= 12;
+
   // step 2: plan + amount + aadhar/newMember + memberId (restore)
   const [planId, setPlanId] = useState<Plan>("1M");
-  const [amount, setAmount] = useState<number>(2999);
+  const [amount, setAmount] = useState<number>(2499);
   const [aadhar, setAadhar] = useState<string>("");
   const [newMember, setNewMember] = useState<boolean>(false);
   const [memberId, setMemberId] = useState<string>(""); // ← prefilled for restore
@@ -60,19 +79,43 @@ export default function AddMembershipGlobalButton() {
   const [err, setErr] = useState<string | null>(null);
 
   // Helper to get the base default per plan
-  function baseAmountForPlan(p: Plan) {
-    if (p === "1M") return 2999;
-    if (p === "3M") return 8999;
-    if (p === "6M") return 17999;
-    return 2999;
+  function baseAmountForPlan(p: Plan, child: boolean) {
+    if (child) {
+      // ✅ Child pricing: only 1M is valid; fixed ₹2500
+      return 2500;
+    }
+    if (p === "1M") return 2499;
+    if (p === "3M") return 6999;
+    if (p === "6M") return 13499;
+    return 2499;
   }
 
-  // When plan changes, reset amount to base + (newMember ? 500 : 0)
+  // When plan OR child flag changes, reset amount appropriately.
   useEffect(() => {
-    const base = baseAmountForPlan(planId);
+    const base = baseAmountForPlan(planId, isChild);
+    // If child, ignore the new-member fee; otherwise apply it
+    setAmount(isChild ? base : base + (newMember ? 500 : 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planId, isChild]);
+
+  // If "newMember" toggles, recompute amount (but ignore when child)
+  useEffect(() => {
+    if (isChild) return; // locked to ₹2500
+    const base = baseAmountForPlan(planId, false);
     setAmount(base + (newMember ? 500 : 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planId]);
+  }, [newMember]);
+
+  // If user becomes "child" after selection, force plan to 1M and lock amount to 2500
+  useEffect(() => {
+    if (isChild) {
+      if (planId !== "1M") setPlanId("1M");
+      setNewMember(false); // child pricing excludes +₹500
+      setAmount(2500);
+    }
+    // no else — adult case already handled in plan/newMember effects
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isChild]);
 
   // fetch users when typing
   useEffect(() => {
@@ -96,6 +139,7 @@ export default function AddMembershipGlobalButton() {
                 email: typeof u.email === "string" ? u.email : undefined,
                 phone: typeof u.phone === "string" ? u.phone : undefined,
                 memberId: typeof u.memberId === "string" ? u.memberId : undefined,
+                dob: typeof u.dob === "string" ? u.dob : undefined, // ✅ include if present
               }))
             : [];
           setResults(arr);
@@ -127,8 +171,10 @@ export default function AddMembershipGlobalButton() {
         email: d.user.email,
         phone: d.user.phone,
         memberId: d.user.memberId,
+        dob: d.user.dob,
       });
 
+      setResolvedDob(d.user.dob); // may be undefined — we’ll try to fetch later
       setMode(d.mode || "new");
 
       // reset transient state
@@ -147,20 +193,16 @@ export default function AddMembershipGlobalButton() {
   }, []);
 
   // When opened in RESTORE mode, ensure we show the existing Member ID:
-  // 1) Use selected.memberId if already present.
-  // 2) Else, try latest membership via /api/memberships?q=<email|name|userId>
-  // 3) Else, try /api/users?q=<email> to read memberId from user profile
+  // ... (unchanged logic)
   useEffect(() => {
     async function fillMemberIdForRestore() {
       if (!open || mode !== "restore" || !selected) return;
 
-      // If we already have it, we’re done
       if (selected.memberId) {
         setMemberId(selected.memberId);
         return;
       }
 
-      // Try to get it from latest membership
       const searchKey =
         selected.email || selected.name || (selected.userId ? `@${selected.userId}` : "") || "";
       try {
@@ -178,7 +220,6 @@ export default function AddMembershipGlobalButton() {
         /* ignore and try users endpoint */
       }
 
-      // Fallback: try /api/users to read user.memberId
       try {
         if (selected.email) {
           const r2 = await fetch(`/api/users?q=${encodeURIComponent(selected.email)}`);
@@ -187,33 +228,58 @@ export default function AddMembershipGlobalButton() {
             Array.isArray(j2?.users) && j2.users.length ? j2.users[0] : undefined;
           if (userHit?.memberId) {
             setMemberId(String(userHit.memberId));
+            // ✅ also capture dob if available
+            if (typeof userHit.dob === "string") setResolvedDob(userHit.dob);
             return;
           }
+          if (typeof userHit?.dob === "string") setResolvedDob(userHit.dob);
         }
       } catch {
         /* ignore */
       }
 
-      // If still nothing, leave blank (server can still accept restore without it,
-      // but UI requested to show it, so better to be explicit)
       setMemberId("");
     }
 
     fillMemberIdForRestore();
   }, [open, mode, selected]);
 
+  // If a user is selected from the search list, also try to resolve DOB if missing
+  useEffect(() => {
+    async function resolveDob() {
+      if (!open || !selected) return;
+      if (selected.dob) {
+        setResolvedDob(selected.dob);
+        return;
+      }
+      // Try fetching by email (or userId handle) to get a full record including dob
+      try {
+        const key = selected.email || (selected.userId ? `@${selected.userId}` : "");
+        if (!key) return;
+        const r = await fetch(`/api/users?q=${encodeURIComponent(key)}`);
+        const j: any = await r.json().catch(() => ({}));
+        const hit = Array.isArray(j?.users) && j.users.length ? j.users[0] : undefined;
+        if (typeof hit?.dob === "string") setResolvedDob(hit.dob);
+      } catch {
+        /* ignore */
+      }
+    }
+    resolveDob();
+  }, [open, selected]);
+
   function resetAll() {
     setQuery("");
     setResults([]);
     setSelected(null);
     setPlanId("1M");
-    setAmount(2999);
+    setAmount(2499);
     setAadhar("");
     setNewMember(false);
     setMode("new");
     setMemberId("");
     setSaving(false);
     setErr(null);
+    setResolvedDob(undefined);
   }
 
   function isValidAadhar(s: string) {
@@ -222,6 +288,7 @@ export default function AddMembershipGlobalButton() {
 
   // Toggle handler: adds/removes ₹500 on top of whatever is in the field
   function onToggleNewMember(e: React.ChangeEvent<HTMLInputElement>) {
+    if (isChild) return; // locked; ignore toggles
     const checked = e.target.checked;
     setNewMember(checked);
     setAmount((prev) => (checked ? prev + 500 : Math.max(0, prev - 500)));
@@ -244,7 +311,6 @@ export default function AddMembershipGlobalButton() {
         return;
       }
     } else {
-      // restore: memberId is strongly expected (UI requirement to show it)
       if (!memberId || !/^\d{7}$/.test(memberId)) {
         setErr("Member ID not found for this user. Please verify their profile.");
         return;
@@ -254,13 +320,17 @@ export default function AddMembershipGlobalButton() {
     setSaving(true);
     setErr(null);
     try {
+      // ✅ Enforce child constraints at payload level too
+      const enforcedPlan: Plan = isChild ? "1M" : planId;
+      const enforcedAmount = isChild ? 2500 : amount;
+
       const body: any = {
         userId: selected.userId || "",
         userName: selected.name || "",
         userEmail: (selected.email || "").toLowerCase(),
-        planId,
-        amount, // includes +₹500 if newMember is checked
-        paidNow: true, // create as PAID
+        planId: enforcedPlan,
+        amount: enforcedAmount, // includes +₹500 only if adult + toggled
+        paidNow: true,
       };
 
       if (mode === "new") {
@@ -281,7 +351,6 @@ export default function AddMembershipGlobalButton() {
         setSaving(false);
         return;
       }
-      // success → close & refresh list
       setOpen(false);
       resetAll();
       window.location.reload();
@@ -356,14 +425,40 @@ export default function AddMembershipGlobalButton() {
 
               {/* Selected user badge */}
               {selected && (
-                <div className="badge" style={{ marginBottom: 8 }}>
-                  Selected: {selectedLabel}
+                <div className="badge" style={{ marginBottom: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span>Selected: {selectedLabel}</span>
+                  {age !== null && (
+                    <span
+                      style={{
+                        background: isChild ? "#e6f8e6" : "#eef2ff",
+                        color: isChild ? "#0a7a0a" : "#334",
+                        padding: "4px 8px",
+                        borderRadius: 999,
+                        fontSize: 12,
+                      }}
+                    >
+                      Age: {age} {isChild ? "• Child pricing applied (₹2,500 · 1M only)" : ""}
+                    </span>
+                  )}
+                  {!resolvedDob && (
+                    <span
+                      style={{
+                        background: "#fff5e6",
+                        color: "#7a4a0a",
+                        padding: "4px 8px",
+                        borderRadius: 999,
+                        fontSize: 12,
+                      }}
+                    >
+                      DOB not found
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="btn"
                     onClick={() => setSelected(null)}
                     style={{
-                      marginLeft: 8,
+                      marginLeft: "auto",
                       background: "#fff",
                       border: "1px solid rgba(17,17,17,0.12)",
                       padding: "4px 8px",
@@ -423,6 +518,7 @@ export default function AddMembershipGlobalButton() {
                               {u.email || "—"}
                               {u.userId ? ` • @${u.userId}` : ""}
                               {u.phone ? ` • ${u.phone}` : ""}
+                              {u.dob ? ` • DOB: ${u.dob}` : ""}
                             </div>
                           </button>
                         ))}
@@ -477,11 +573,25 @@ export default function AddMembershipGlobalButton() {
                     className="input"
                     value={planId}
                     onChange={(e) => setPlanId(e.target.value as Plan)}
+                    disabled={isChild} // ✅ lock when child
+                    title={isChild ? "Child pricing: 1M only" : "Select plan"}
                   >
-                    <option value="1M">1M (25 games)</option>
-                    <option value="3M">3M (75 games)</option>
-                    <option value="6M">6M (150 games)</option>
+                    {/* ✅ If child, only show 1M */}
+                    {isChild ? (
+                      <option value="1M">1M (25 games)</option>
+                    ) : (
+                      <>
+                        <option value="1M">1M (25 games)</option>
+                        <option value="3M">3M (75 games)</option>
+                        <option value="6M">6M (150 games)</option>
+                      </>
+                    )}
                   </select>
+                  {isChild && (
+                    <div style={{ fontSize: 12, color: "#0a7a0a", marginTop: 4 }}>
+                      Age ≤ 12: only 1M plan is available.
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -493,21 +603,26 @@ export default function AddMembershipGlobalButton() {
                     step="1"
                     value={amount}
                     onChange={(e) => setAmount(Number(e.target.value))}
+                    readOnly={isChild} // ✅ lock amount for child
+                    title={isChild ? "Child pricing locks amount to ₹2,500" : "Edit amount"}
                   />
                   <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
-                    {newMember
+                    {isChild
+                      ? "Child pricing applied (no new member fee)."
+                      : newMember
                       ? "Includes ₹500 new member fee."
                       : "No new member fee applied."}
                   </div>
                 </div>
 
-                {/* New member (+₹500) checkbox (you can hide this in restore if desired) */}
+                {/* New member (+₹500) checkbox */}
                 <div
                   style={{
                     gridColumn: "1 / -1",
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
+                    opacity: isChild ? 0.5 : 1,
                   }}
                 >
                   <input
@@ -516,11 +631,13 @@ export default function AddMembershipGlobalButton() {
                     checked={newMember}
                     onChange={onToggleNewMember}
                     style={{ width: 18, height: 18 }}
+                    disabled={isChild} // ✅ disabled when child
                   />
                   <label
                     htmlFor="new-member"
                     className="label"
-                    style={{ margin: 0, cursor: "pointer" }}
+                    style={{ margin: 0, cursor: isChild ? "not-allowed" : "pointer" }}
+                    title={isChild ? "Child pricing excludes the new member fee" : undefined}
                   >
                     New member <span style={{ color: "#555" }}>(+₹500 one-time)</span>
                   </label>
