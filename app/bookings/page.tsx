@@ -180,6 +180,13 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
   const toIdString = (v: string | { toString?: () => string }) =>
     typeof v === "string" ? v : v?.toString?.() || "";
 
+  // helper: compute per-slot amount (rounded to nearest rupee)
+  function perSlotAmount(total?: number, count?: number): number | null {
+    if (typeof total !== "number") return null;
+    if (!count || count <= 0) return total;
+    return Math.round(total / count);
+  }
+
   for (const b of bookings) {
     const phone =
       (b.userId && phoneByKey.get(String(b.userId))) ||
@@ -191,17 +198,20 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
       userName: b.userName || "—",
       userPhone: phone,
       date: b.date || "—",
-      amount: b.amount ?? null,
       currency: b.currency,
       paymentRef: b.paymentRef,
       adminPaid: b.adminPaid === true,
       createdAt: new Date(b.createdAt ?? Date.now()).getTime(),
     };
 
-    if (b.slots?.length) {
-      b.slots.forEach((s, idx) =>
+    const slots = b.slots || [];
+    const perSlot = perSlotAmount(b.amount, slots.length);
+
+    if (slots.length) {
+      slots.forEach((s, idx) =>
         rows.push({
           ...base,
+          amount: perSlot,
           courtId: s.courtId ?? null,
           start: s.start || "—",
           end: s.end || "—",
@@ -209,29 +219,40 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
         })
       );
     } else {
-      rows.push({ ...base, courtId: null, start: "—", end: "—", slotIndex: -1 });
+      rows.push({
+        ...base,
+        amount: b.amount ?? null,
+        courtId: null,
+        start: "—",
+        end: "—",
+        slotIndex: -1,
+      });
     }
   }
 
   for (const g of guestBookings) {
     const phone = g.phone_number || g.guestPhone || "—";
     const isPaid = String(g.paymentRef || "").toUpperCase().startsWith("PAID.");
+
     const base = {
       bookingId: toIdString(g._id),
       userName: g.userName || "—",
       userPhone: phone,
       date: g.date || "—",
-      amount: g.amount ?? null,
       currency: g.currency,
       paymentRef: g.paymentRef,
       adminPaid: isPaid,
       createdAt: new Date(g.createdAt ?? Date.now()).getTime(),
     };
 
-    if (g.slots?.length) {
-      g.slots.forEach((s, idx) =>
+    const slots = g.slots || [];
+    const perSlot = perSlotAmount(g.amount, slots.length);
+
+    if (slots.length) {
+      slots.forEach((s, idx) =>
         rows.push({
           ...base,
+          amount: perSlot,
           courtId: s.courtId ?? null,
           start: s.start || "—",
           end: s.end || "—",
@@ -239,7 +260,14 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
         })
       );
     } else {
-      rows.push({ ...base, courtId: null, start: "—", end: "—", slotIndex: -1 });
+      rows.push({
+        ...base,
+        amount: g.amount ?? null,
+        courtId: null,
+        start: "—",
+        end: "—",
+        slotIndex: -1,
+      });
     }
   }
 

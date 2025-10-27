@@ -7,14 +7,15 @@ type UserLite = { _id: string; userId?: string; name?: string; email?: string; p
 type Availability = Record<number, { start: string; end: string }[]>;
 type Slot = { courtId: number; start: string; end: string };
 type Who = "member" | "user" | "guest";
+type PricingMode = "court" | "individual";
 
 type AdminBookingBody = {
   type: Who;
   date: string;
   slots: Slot[];
   markPaid: boolean;
-  // ↓ optional hints for backend to persist the exact paymentRef state
-  paymentRef?: string; // "PAID.CASH" | "UNPAID.CASH" | "MEMBERSHIP" | etc.
+  paymentRef?: string;
+  pricingMode?: PricingMode; // ⬅️ NEW
 
   userEmail?: string;
   userName?: string;
@@ -34,7 +35,7 @@ function getUTCDayFromYMD(ymd: string): number {
   return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
 /** Weekend price (Sat/Sun) ₹700, Weekday ₹500 */
-function pricePerSlot(dateYMD: string | ""): number {
+function pricePerSlotCourt(dateYMD: string | ""): number {
   if (!dateYMD) return 500; // default fallback
   const dow = getUTCDayFromYMD(dateYMD);
   if (Number.isNaN(dow)) return 500;
@@ -55,19 +56,15 @@ function label12h(h: number) {
   const hour = ((h + 11) % 12) + 1;
   return `${hour}:00 ${ampm}`;
 }
-function todayYMD() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 export default function AddBookingButton() {
   const [open, setOpen] = useState(false);
 
   // who
   const [who, setWho] = useState<Who>("member");
+
+  // ⬇️ NEW: pricing mode
+  const [pricingMode, setPricingMode] = useState<PricingMode>("court");
 
   // date
   const [date, setDate] = useState<string>("");
@@ -177,15 +174,9 @@ export default function AddBookingButton() {
     return s;
   }, [availability]);
 
-  // Utility: is the slot in the past?
-  function isPastSlot(hour: number) {
-    if (!date) return false;
-    const today = todayYMD();
-    if (date < today) return true;        // past day → all blocked
-    if (date > today) return false;       // future day → none blocked (except booked)
-    const now = new Date();
-    const currentHour = now.getHours();   // local time
-    return currentHour >= hour;           // at start time, it becomes past
+  // past-slot logic disabled (as earlier)
+  function isPastSlot(_hour: number) {
+    return false;
   }
 
   function toggle(courtId: number, hour: number) {
@@ -193,8 +184,7 @@ export default function AddBookingButton() {
     const end = hhmm(hour + 1);
     const key = `${courtId}_${start}_${end}`;
 
-    // If booked or past, do nothing
-    if (bookedSet.has(key) || isPastSlot(hour)) return;
+    if (bookedSet.has(key)) return;
 
     const exists = selected.find(s => s.courtId === courtId && s.start === start && s.end === end);
     if (exists) {
@@ -205,11 +195,18 @@ export default function AddBookingButton() {
   }
 
   const totalSlots = selected.length;
-  const perSlot = who === "member" ? 0 : pricePerSlot(date);
-  const totalAmount = who === "member" ? 0 : totalSlots * perSlot;
+
+  // ⬇️ UPDATED: pricing depends on mode
+  const effectivePerSlot =
+    who === "member"
+      ? 0
+      : (pricingMode === "individual" ? 150 : pricePerSlotCourt(date));
+
+  const totalAmount = who === "member" ? 0 : totalSlots * effectivePerSlot;
 
   function resetAll() {
     setWho("member");
+    setPricingMode("court");
     setDate("");
     setQuery("");
     setResults([]);
@@ -237,11 +234,9 @@ export default function AddBookingButton() {
         if (!guestName.trim() || !guestPhone.trim()) throw new Error("Guest name and phone are required.");
       }
 
-      // Final guard: ensure no selected slot has become booked/past just now
       for (const s of selected) {
-        const hour = Number(s.start.split(":")[0] || "0");
         const key = `${s.courtId}_${s.start}_${s.end}`;
-        if (bookedSet.has(key) || isPastSlot(hour)) {
+        if (bookedSet.has(key)) {
           throw new Error("Some selected slots are no longer available. Please refresh availability and try again.");
         }
       }
@@ -251,9 +246,9 @@ export default function AddBookingButton() {
         date,
         slots: selected,
         markPaid,
+        pricingMode, // ⬅️ send to backend
       };
 
-      // Explicit paymentRef hint so backend can persist the exact state:
       if (who === "member") {
         body.paymentRef = "MEMBERSHIP";
       } else {
@@ -347,9 +342,9 @@ export default function AddBookingButton() {
                 </div>
               )}
 
-              {/* Who + Date */}
+              {/* Who + Date + Pricing Mode */}
               <div className="form" style={{ marginBottom: 12 }}>
-                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr 1fr" }}>
                   <div>
                     <label className="label">Who is this for?</label>
                     <select
@@ -370,20 +365,37 @@ export default function AddBookingButton() {
                       value={date}
                       onChange={(e) => setDate(e.target.value)}
                     />
-                    {/* per-slot price & day hint */}
                     {date && (
                       <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
-                        {day ? `${day}` : "Selected date"} •{" "}
-                        <b>₹{pricePerSlot(date)}/slot</b>
-                        {weekend && <span> (weekend pricing)</span>}
+                        {day ? `${day}` : "Selected date"}
+                        {pricingMode === "court" && (
+                          <>
+                            {" "}• <b>₹{pricePerSlotCourt(date)}/slot</b>
+                            {weekend && <span> (weekend pricing)</span>}
+                          </>
+                        )}
+                        {pricingMode === "individual" && (
+                          <> • <b>₹150/slot</b></>
+                        )}
                       </div>
                     )}
+                  </div>
+                  <div>
+                    <label className="label">Pricing</label>
+                    <select
+                      className="input"
+                      value={pricingMode}
+                      onChange={(e) => setPricingMode(e.target.value as PricingMode)}
+                    >
+                      <option value="court">Court</option>
+                      <option value="individual">Individual (₹150/slot)</option>
+                    </select>
                   </div>
                 </div>
 
                 {/* Member/User → search */}
                 {(who === "member" || who === "user") && (
-                  <div>
+                  <div style={{ marginTop: 10 }}>
                     <label className="label">
                       {who === "member" ? "Search member (name / email)" : "Search user (name / email / phone / username)"}
                     </label>
@@ -431,7 +443,7 @@ export default function AddBookingButton() {
 
                 {/* Guest fields */}
                 {who === "guest" && (
-                  <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                  <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr", marginTop: 10 }}>
                     <div>
                       <label className="label">Guest name</label>
                       <input className="input" value={guestName} onChange={(e) => setGuestName(e.target.value)} />
@@ -460,12 +472,8 @@ export default function AddBookingButton() {
                         const past = isPastSlot(h);
                         const active = selected.some(s => s.courtId === c && s.start === start && s.end === end);
 
-                        const disabled = isBooked || past;
+                        const disabled = isBooked;
 
-                        // Style states:
-                        // - booked: green + disabled
-                        // - past: grey + disabled
-                        // - active selection: orange
                         let bg = "#fff";
                         let border = "1px solid rgba(17,17,17,0.12)";
                         let color = "inherit";
@@ -473,10 +481,6 @@ export default function AddBookingButton() {
                           bg = "#22c55e"; // green
                           border = "1px solid #16a34a";
                           color = "#fff";
-                        } else if (past) {
-                          bg = "#f3f4f6"; // light gray
-                          border = "1px solid rgba(17,17,17,0.08)";
-                          color = "#9ca3af";
                         } else if (active) {
                           bg = "var(--accent)";
                           border = "1px solid var(--accent)";
@@ -498,13 +502,10 @@ export default function AddBookingButton() {
                               cursor: disabled ? "not-allowed" : "pointer",
                               opacity: disabled ? 0.9 : 1,
                             }}
-                            title={
-                              isBooked ? "Already booked" :
-                              past ? "Past time slot" :
-                              active ? "Selected" : "Available"
-                            }
+                            title={isBooked ? "Already booked" : active ? "Selected" : "Available"}
                           >
                             {label12h(h)} - {label12h(h + 1)}
+                            {past ? "" : ""}
                           </button>
                         );
                       })}
@@ -519,7 +520,8 @@ export default function AddBookingButton() {
                   {totalSlots} slot{totalSlots === 1 ? "" : "s"}
                   {who !== "member" && (
                     <>
-                      {" "}• ₹{perSlot}/slot • Total: <b>₹{totalAmount}</b>
+                      {" "}• ₹{effectivePerSlot}/slot • Total: <b>₹{totalAmount}</b>
+                      {pricingMode === "court" && weekend && " (weekend pricing)"}
                     </>
                   )}
                 </div>

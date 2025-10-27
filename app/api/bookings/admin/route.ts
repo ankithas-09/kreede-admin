@@ -22,11 +22,20 @@ type AdminCreateBody = {
   userEmail?: string;
   guestName?: string;
   guestPhone?: string;        // phone collected in UI for guest
+
+  // Existing pricing selector
+  pricingMode?: "court" | "individual";
+
+  // 🔵 Offer booking (optional)
+  offerId?: string;                 // selected offer _id
+  offerName?: string;               // label (for UI/export context)
+  offerConditionKeys?: string[];    // ids/keys of checked conditions
+  offerUnitPrice?: number;          // per-slot price for this offer
+  offerTotal?: number;              // explicit total (bundle) if applicable
 };
 
 /**
  * Parse "YYYY-MM-DD" to a UTC Date (midnight) and return the day of week using UTC (0=Sun, 6=Sat).
- * This avoids timezone ambiguity from Date("YYYY-MM-DD") which can shift days based on server TZ.
  */
 function getUTCDayFromYMD(ymd: string): number {
   const [y, m, d] = ymd.split("-").map((v) => Number(v));
@@ -36,7 +45,7 @@ function getUTCDayFromYMD(ymd: string): number {
 }
 
 /** Weekend pricing: Sat/Sun = 700, otherwise 500 */
-function getSlotPrice(dateYMD: string): number {
+function getCourtSlotPrice(dateYMD: string): number {
   const dow = getUTCDayFromYMD(dateYMD);
   if (Number.isNaN(dow)) return 500; // safe fallback
   return dow === 0 || dow === 6 ? 700 : 500;
@@ -55,6 +64,14 @@ export async function POST(req: Request) {
       userEmail,
       guestName,
       guestPhone,
+      pricingMode = "court",
+
+      // Offer inputs (optional)
+      offerId,
+      offerName,
+      offerConditionKeys,
+      offerUnitPrice,
+      offerTotal,
     } = body || {};
 
     // ---- validation ----
@@ -63,9 +80,13 @@ export async function POST(req: Request) {
     }
     if (!date) return NextResponse.json({ error: "Missing date" }, { status: 400 });
 
+    // ✅ Narrow once, then only use dateStr below
+    const dateStr: string = date;
+
     const isMember = type === "member";
     const isUser   = type === "user";
     const isGuest  = type === "guest";
+    const isOffer  = Boolean(offerId);
 
     if ((isMember || isUser) && !userEmail) {
       return NextResponse.json({ error: "User email is required" }, { status: 400 });
@@ -79,9 +100,33 @@ export async function POST(req: Request) {
     const GuestBooking = await GuestBookingModel();
 
     // ---- billing ----
-    const slotsCount = Math.max(1, slots.length); // credits to consume for members
-    const perSlot = getSlotPrice(date);           // 500 weekdays, 700 weekends
-    const totalAmount = isMember ? 0 : Number(slotsCount * perSlot);
+    const slotsCount = Math.max(1, slots.length);
+
+    // Compute non-member pricing:
+    // 1) If offer present:
+    //    - Use offerTotal if provided
+    //    - Else use offerUnitPrice * slotsCount
+    //    - Else fallback to your existing modes
+    // 2) Members always 0
+    function computeNonMemberTotal(): number {
+      // Offer branch
+      if (isOffer) {
+        if (typeof offerTotal === "number" && Number.isFinite(offerTotal)) {
+          return Math.max(0, Math.round(offerTotal));
+        }
+        if (typeof offerUnitPrice === "number" && Number.isFinite(offerUnitPrice)) {
+          return Math.max(0, Math.round(offerUnitPrice * slotsCount));
+        }
+        // If offer provided without numbers, gracefully fall back
+      }
+
+      // Fallback to normal modes
+      const perSlot =
+        pricingMode === "individual" ? 150 : getCourtSlotPrice(dateStr);
+      return Math.max(0, Math.round(perSlot * slotsCount));
+    }
+
+    const totalAmount = isMember ? 0 : computeNonMemberTotal();
     const currency = "INR";
 
     // adminPaid: members + “Create & Mark Paid” => true; “Create (Pending)” => false
@@ -89,29 +134,33 @@ export async function POST(req: Request) {
 
     // paymentRef:
     // - Member: MEMBERSHIP
-    // - Non-member (user/guest):
-    //     * markPaid -> PAID.CASH
-    //     * pending  -> UNPAID.CASH
-    const paymentRef =
-      isMember ? "MEMBERSHIP" : (markPaid ? "PAID.CASH" : "UNPAID.CASH");
+    // - Offer (non-member):  PAID.OFFER / UNPAID.OFFER
+    // - Otherwise (non-member): PAID.CASH / UNPAID.CASH
+    const paymentRef = isMember
+      ? "MEMBERSHIP"
+      : isOffer
+        ? (markPaid ? "PAID.OFFER" : "UNPAID.OFFER")
+        : (markPaid ? "PAID.CASH" : "UNPAID.CASH");
 
     // Always set a unique orderId for admin-created bookings
-    const orderId = genAdminOrderId();
+    // If an offer is used, append a suffix to help traceability without schema changes.
+    let orderId = genAdminOrderId();
+    if (isOffer && offerId) {
+      orderId = `${orderId}__offer_${offerId}`;
+    }
 
     // -----------------------------------------------------------------------
     // MEMBERSHIP CREDIT GUARD (1 per slot) — Block if not enough credits
     // -----------------------------------------------------------------------
-    // Reserve credits atomically; roll back if booking creation fails.
     let reservedCredits = false;
     let memberUserObjectId = "";
 
     if (isMember) {
-      // Resolve users._id (Membership.userId stores users._id as string)
       const User = await UserModel();
       const userDoc = await User.findOne({
         $or: [
           { email: String(userEmail || "").toLowerCase() },
-          { userId: userId || "" }, // username stored on User.userId
+          { userId: userId || "" },
         ],
       }).lean();
 
@@ -120,8 +169,6 @@ export async function POST(req: Request) {
       }
       memberUserObjectId = String(userDoc._id);
 
-      // Conditionally increment gamesUsed ONLY if enough remaining credits exist.
-      // Filter condition: gamesUsed <= (games - slotsCount)
       const Membership = await MembershipModel();
       const updated = await Membership.findOneAndUpdate(
         {
@@ -142,7 +189,6 @@ export async function POST(req: Request) {
       );
 
       if (!updated) {
-        // Not enough credits OR no PAID membership found
         return NextResponse.json(
           { error: "Membership credits are over. Book as a user." },
           { status: 400 }
@@ -158,39 +204,38 @@ export async function POST(req: Request) {
         const created = await GuestBooking.create({
           orderId,
           userName: guestName || "Guest",
-          // ⬇️ persist guest phone as phone_number in guest_bookings
           phone_number: guestPhone,
-          // (optional) keep legacy mirror for any old code paths (safe to remove later):
-          // guestPhone,
-          date,
+          date: dateStr,
           slots,
           amount: totalAmount,
           currency,
-          status: "PAID",        // stored as PAID (your admin flow)
-          paymentRef,            // "PAID.CASH" or "UNPAID.CASH"
-          adminPaid,             // false when pending, true when marked paid
+          status: "PAID",
+          paymentRef,
+          adminPaid,
+          // If you add fields to the GuestBooking schema later, persist:
+          // offerId, offerName, offerConditionKeys
         });
         return NextResponse.json({ ok: true, id: String(created._id) });
       }
 
-      // regular (member/user) bookings go to main bookings collection
       const created = await Booking.create({
         orderId,
         userId:   isMember ? (userId || undefined) : (isUser ? userId || undefined : undefined),
         userName: userName || (isMember ? "—" : "—"),
         userEmail: (userEmail ? String(userEmail).toLowerCase() : undefined),
-        date,
+        date: dateStr,
         slots,
         amount:   totalAmount,
         currency,
-        status:   "PAID",        // stored as PAID; adminPaid governs paid/unpaid in UI
-        paymentRef,              // "PAID.CASH" or "UNPAID.CASH" for non-members; "MEMBERSHIP" for members
-        adminPaid,               // false when pending
+        status:   "PAID",
+        paymentRef,
+        adminPaid,
+        // If you add fields to the Booking schema later, persist:
+        // offerId, offerName, offerConditionKeys
       });
 
       return NextResponse.json({ ok: true, id: String(created._id) });
     } catch (createErr) {
-      // If booking creation fails AFTER reserving credits, roll back.
       if (reservedCredits && memberUserObjectId) {
         try {
           const Membership = await MembershipModel();
