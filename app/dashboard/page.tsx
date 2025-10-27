@@ -88,7 +88,7 @@ export default function Dashboard() {
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
           gap: "20px",
-          maxHeight: "calc(100vh - 90px)", // ensures scroll only for cards
+          maxHeight: "calc(100vh - 90px)",
           overflowY: "auto",
           paddingRight: "6px",
         }}
@@ -116,6 +116,12 @@ export default function Dashboard() {
         <a className="dash-card" href="/refunds">
           <div className="dash-card-title">Refunds</div>
           <p className="dash-card-sub">Court & event refunds</p>
+        </a>
+
+        {/* ✅ New Offers card */}
+        <a className="dash-card" href="/offers">
+          <div className="dash-card-title">Offers</div>
+          <p className="dash-card-sub">Create and manage promo offers</p>
         </a>
       </main>
     </div>
