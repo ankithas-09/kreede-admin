@@ -27,6 +27,9 @@ type BookingLean = {
   paymentRef?: string;
   adminPaid?: boolean;
   createdAt?: Date | string;
+  // NEW meta fields
+  bookingType?: "Normal" | "Special" | "Individual";
+  who?: "member" | "user" | "guest";
 };
 
 type GuestBookingLean = {
@@ -41,6 +44,9 @@ type GuestBookingLean = {
   paymentRef?: string;
   adminPaid?: boolean;
   createdAt?: Date | string;
+  // Not present in schema yet, but keep optional for future
+  bookingType?: "Normal" | "Special" | "Individual";
+  who?: "member" | "user" | "guest";
 };
 
 export default async function BookingsPage({ searchParams }: { searchParams: SearchParams }) {
@@ -51,9 +57,10 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
   const q = (searchParams.q || "").trim();
   const dateFilter = (searchParams.date || "").trim();
   const courtIdFilterRaw = (searchParams.courtId || "").trim();
-  const courtIdFilter = courtIdFilterRaw && !Number.isNaN(Number(courtIdFilterRaw))
-    ? Number(courtIdFilterRaw)
-    : null;
+  const courtIdFilter =
+    courtIdFilterRaw && !Number.isNaN(Number(courtIdFilterRaw))
+      ? Number(courtIdFilterRaw)
+      : null;
 
   // Helper: check ObjectId
   const isValidObjectIdString = (s: unknown) =>
@@ -67,8 +74,9 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
 
   if (q) {
     orParts.push({ userName: { $regex: q, $options: "i" } });
-    orParts.push({ userPhone: { $regex: q, $options: "i" } });
+    orParts.push({ userPhone: { $regex: q, $options: "i" } }); // legacy support: if ever stored
 
+    // Phone search → map to users by phone and match userId variants
     const looksLikePhone = /\d{4,}/.test(q.replace(/\s+/g, ""));
     if (looksLikePhone) {
       const matchedUsers = await User.find({ phone: { $regex: q, $options: "i" } })
@@ -100,6 +108,9 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
       paymentRef: 1,
       adminPaid: 1,
       createdAt: 1,
+      // NEW selects
+      bookingType: 1,
+      who: 1,
     })
     .sort({ createdAt: -1 })
     .lean()) as BookingLean[];
@@ -154,6 +165,9 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
       paymentRef: 1,
       adminPaid: 1,
       createdAt: 1,
+      // keep room for future
+      bookingType: 1,
+      who: 1,
     })
     .lean()) as GuestBookingLean[];
 
@@ -174,6 +188,9 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     end: string;
     slotIndex: number;
     createdAt: number;
+    // NEW for display/filter later
+    bookingType: "Normal" | "Special" | "Individual";
+    who: "member" | "user" | "guest";
   };
 
   const rows: Row[] = [];
@@ -203,6 +220,8 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
       paymentRef: b.paymentRef,
       adminPaid: b.adminPaid === true,
       createdAt: new Date(b.createdAt ?? Date.now()).getTime(),
+      bookingType: (b.bookingType as Row["bookingType"]) || "Normal",
+      who: (b.who as Row["who"]) || "user", // older rows default to "user" if not set
     };
 
     const slots = b.slots || [];
@@ -244,6 +263,8 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
       paymentRef: g.paymentRef,
       adminPaid: isPaid,
       createdAt: new Date(g.createdAt ?? Date.now()).getTime(),
+      bookingType: (g.bookingType as Row["bookingType"]) || "Normal",
+      who: (g.who as Row["who"]) || "guest",
     };
 
     const slots = g.slots || [];
@@ -273,7 +294,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
   }
 
   /** ---------------------------------------
-   * Sorting: date asc → start asc
+   * Sorting: date asc → start asc → newest created
    * ------------------------------------- */
   const toMinutes = (hhmm: string) => {
     const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
@@ -441,6 +462,8 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
                 <th>Court ID</th>
                 <th>Start</th>
                 <th>End</th>
+                <th>Type</th> {/* NEW: bookingType */}
+                <th>Who</th>  {/* NEW: who */}
                 <th>Actions</th>
               </tr>
             </thead>
@@ -460,6 +483,8 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
                     <td>{r.courtId ?? "—"}</td>
                     <td>{r.start}</td>
                     <td>{r.end}</td>
+                    <td>{r.bookingType}</td>
+                    <td style={{ textTransform: "capitalize" }}>{r.who}</td>
                     <td>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         {r.slotIndex >= 0 && (
@@ -480,7 +505,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
 
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={{ textAlign: "center", padding: "18px" }}>
+                  <td colSpan={11} style={{ textAlign: "center", padding: "18px" }}>
                     No bookings found
                     {q ? ` for “${q}”` : ""}
                     {dateFilter ? ` on ${dateFilter}` : ""}

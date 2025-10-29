@@ -198,6 +198,13 @@ export async function POST(req: Request) {
       reservedCredits = true;
     }
 
+    // ⬇️ NEW: derive bookingType + who for persistence
+    const bookingType: "Normal" | "Individual" | "Special" =
+      isOffer ? "Special" : (pricingMode === "individual" ? "Individual" : "Normal");
+
+    const whoField: "member" | "user" | "guest" =
+      isMember ? "member" : (isUser ? "user" : "guest");
+
     // ---- create booking in the correct collection ----
     try {
       if (isGuest) {
@@ -212,7 +219,12 @@ export async function POST(req: Request) {
           status: "PAID",
           paymentRef,
           adminPaid,
-          // If you add fields to the GuestBooking schema later, persist:
+
+          // ⬇️ NEW metadata
+          bookingType,
+          who: whoField,
+
+          // If you add fields to the GuestBooking schema later, you can also persist:
           // offerId, offerName, offerConditionKeys
         });
         return NextResponse.json({ ok: true, id: String(created._id) });
@@ -230,6 +242,11 @@ export async function POST(req: Request) {
         status:   "PAID",
         paymentRef,
         adminPaid,
+
+        // ⬇️ NEW metadata
+        bookingType,
+        who: whoField,
+
         // If you add fields to the Booking schema later, persist:
         // offerId, offerName, offerConditionKeys
       });

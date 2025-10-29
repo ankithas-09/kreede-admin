@@ -2,18 +2,20 @@
 import { NextResponse } from "next/server";
 import { getOfferModel } from "@/models/Offer";
 import { BookingModel } from "@/models/Booking";
+import { GuestBookingModel } from "@/models/GuestBooking";
 
 type SlotIn = { courtId: number; start: string; end: string };
+
 type Body = {
   type: "member" | "user" | "guest";
   date: string;                 // "yyyy-mm-dd"
   slots: SlotIn[];
   offerId: string;
   selectedRuleLabel?: string;   // conditional offers
-  paymentRef?: string;          // "MEMBERSHIP" or "PAID.CASH"
+  paymentRef?: string;          // "MEMBERSHIP" | "PAID.CASH" | "PAID.OFFER" etc.
 
   // for member/user
-  userId?: string;
+  userId?: string;              // your username field (optional)
   userName?: string;
   userEmail?: string;
 
@@ -27,10 +29,12 @@ function toMin(hhmm: string) {
   if (!m) return NaN;
   return Number(m[1]) * 60 + Number(m[2]);
 }
+
 function withinRange(hhmm: string, from: string, to: string) {
   const v = toMin(hhmm), f = toMin(from), t = toMin(to);
   return !Number.isNaN(v) && !Number.isNaN(f) && !Number.isNaN(t) && v >= f && v <= t;
 }
+
 function randId(n = 6) {
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
   let s = "";
@@ -42,26 +46,42 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as Body;
 
+    // Compute flags ONCE (pre-narrowing) and reuse
+    const isGuest  = body.type === "guest";
+    const isMember = body.type === "member";
+    const isUser   = body.type === "user";
+
+    // Basic validations
     if (!body.offerId) return NextResponse.json({ ok: false, error: "offerId is required" }, { status: 400 });
-    if (!body.type) return NextResponse.json({ ok: false, error: "type is required" }, { status: 400 });
-    if (!body.date) return NextResponse.json({ ok: false, error: "date is required" }, { status: 400 });
-    if (!Array.isArray(body.slots) || !body.slots.length)
+    if (!body.type)    return NextResponse.json({ ok: false, error: "type is required" }, { status: 400 });
+    if (!body.date)    return NextResponse.json({ ok: false, error: "date is required" }, { status: 400 });
+    if (!Array.isArray(body.slots) || !body.slots.length) {
       return NextResponse.json({ ok: false, error: "At least one slot is required" }, { status: 400 });
+    }
 
-    if (body.type === "member" || body.type === "user") {
+    if (isMember || isUser) {
       if (!body.userName || !body.userEmail) {
-        return NextResponse.json({ ok: false, error: "userName and userEmail are required for member/user" }, { status: 400 });
+        return NextResponse.json(
+          { ok: false, error: "userName and userEmail are required for member/user" },
+          { status: 400 }
+        );
       }
     }
-    if (body.type === "guest") {
+    if (isGuest) {
       if (!body.guestName || !body.guestPhone) {
-        return NextResponse.json({ ok: false, error: "guestName and guestPhone are required for guest" }, { status: 400 });
+        return NextResponse.json(
+          { ok: false, error: "guestName and guestPhone are required for guest" },
+          { status: 400 }
+        );
       }
     }
 
-    const Offer = await getOfferModel();
-    const Booking = await BookingModel();
+    // Load models
+    const Offer        = await getOfferModel();
+    const Booking      = await BookingModel();
+    const GuestBooking = await GuestBookingModel();
 
+    // Validate offer
     const offer = await Offer.findById(body.offerId).lean();
     if (!offer || !offer.active) {
       return NextResponse.json({ ok: false, error: "Offer not found or inactive" }, { status: 404 });
@@ -73,7 +93,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Selected date is outside offer range" }, { status: 400 });
     }
 
-    // Time window validation
+    // Time window validation for each slot
     for (const s of body.slots) {
       if (!withinRange(s.start, offer.timeFrom, offer.timeTo) || !withinRange(s.end, offer.timeFrom, offer.timeTo)) {
         return NextResponse.json({ ok: false, error: "One or more slot times are outside offer hours" }, { status: 400 });
@@ -82,52 +102,81 @@ export async function POST(req: Request) {
 
     // Pricing
     let perSlot = 0;
-    if (body.type === "member") {
+    if (isMember) {
       perSlot = 0; // MEMBERSHIP = free
     } else {
       if (offer.type === "flat") {
-        if (typeof offer.flatPrice !== "number")
+        if (typeof offer.flatPrice !== "number") {
           return NextResponse.json({ ok: false, error: "Offer missing flatPrice" }, { status: 400 });
+        }
         perSlot = Math.max(0, Math.round(offer.flatPrice));
       } else {
         const rule = (offer.rules || []).find((r) => r.label === body.selectedRuleLabel);
-        if (!rule) return NextResponse.json({ ok: false, error: "Please select a valid rule" }, { status: 400 });
+        if (!rule) {
+          return NextResponse.json({ ok: false, error: "Please select a valid rule" }, { status: 400 });
+        }
         perSlot = Math.max(0, Math.round(rule.price));
       }
     }
     const totalAmount = perSlot * body.slots.length;
 
-    // Build doc
+    // Build common fields
     const orderId = `admin_${Date.now()}_${randId()}`;
-    const common = {
+    const normalizedSlots = body.slots.map((s) => ({
+      courtId: Number(s.courtId),
+      start: s.start,
+      end: s.end,
+    }));
+
+    // Default paymentRef semantics
+    const paymentRef =
+      body.paymentRef || (isMember ? "MEMBERSHIP" : "PAID.CASH");
+
+    // Guest special bookings → guest_bookings
+    if (isGuest) {
+      const created = await GuestBooking.create({
+        orderId,
+        userName: body.guestName!,
+        phone_number: body.guestPhone!,
+        date: body.date,
+        slots: normalizedSlots,
+        amount: totalAmount,
+        currency: "INR",
+        status: "PAID",
+        paymentRef,
+        adminPaid: true,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        bookingId: String(created._id),
+        orderId,
+        collection: "guest_bookings",
+      });
+    }
+
+    // Member/User → bookings
+    const created = await Booking.create({
       orderId,
       date: body.date,
-      slots: body.slots.map((s) => ({
-        courtId: Number(s.courtId),
-        start: s.start,
-        end: s.end,
-      })),
+      slots: normalizedSlots,
       amount: totalAmount,
       currency: "INR",
       status: "PAID",
-      paymentRef: body.paymentRef || (body.type === "member" ? "MEMBERSHIP" : "PAID.CASH"),
+      paymentRef,
       adminPaid: true,
-    } as const;
-
-    const doc = await Booking.create({
-      ...common,
-      userId: body.type !== "guest" ? (body.userId || undefined) : undefined,
-      userName:
-        body.type === "guest"
-          ? body.guestName
-          : (body.userName || "—"),
-      userEmail:
-        body.type === "guest"
-          ? undefined
-          : (body.userEmail || undefined),
+      // IMPORTANT: no comparison to "guest" here; TS knows we're in member/user branch
+      userId: body.userId || undefined,
+      userName: body.userName || "—",
+      userEmail: body.userEmail || undefined,
     });
 
-    return NextResponse.json({ ok: true, bookingId: String(doc._id), orderId });
+    return NextResponse.json({
+      ok: true,
+      bookingId: String(created._id),
+      orderId,
+      collection: "bookings",
+    });
   } catch (err: any) {
     console.error("special booking error", err);
     return NextResponse.json({ ok: false, error: err?.message || "Unexpected error" }, { status: 500 });

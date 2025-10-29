@@ -14,6 +14,11 @@ export interface BookingDoc extends mongoose.Document {
   status: "PAID";
   paymentRef?: string;
   adminPaid?: boolean;
+
+  // NEW
+  bookingType?: "Normal" | "Individual" | "Special";
+  who?: "member" | "user" | "guest";
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -30,7 +35,7 @@ const SlotSchema = new Schema(
 const BookingSchema = new Schema<BookingDoc>(
   {
     // 🔧 removed inline index to avoid duplicate with schema.index below
-    orderId:    { type: String }, 
+    orderId:    { type: String },
     userId:     { type: String, index: true },
     userName:   { type: String },
     userEmail:  { type: String, lowercase: true, index: true },
@@ -41,6 +46,10 @@ const BookingSchema = new Schema<BookingDoc>(
     status:     { type: String, enum: ["PAID"], default: "PAID" },
     paymentRef: { type: String },
     adminPaid:  { type: Boolean, default: true },
+
+    // ✅ NEW fields
+    bookingType: { type: String, enum: ["Normal", "Individual", "Special"], default: "Normal", index: true },
+    who:         { type: String, enum: ["member", "user", "guest"], index: true },
   },
   { timestamps: true, collection: "bookings" }
 );

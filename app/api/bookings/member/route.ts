@@ -80,6 +80,10 @@ export async function POST(req: Request) {
       status: "PAID",
       paymentRef: "MEMBERSHIP",         // 🔴 key piece
       adminPaid: true,                  // hide "Mark Paid" button in UI
+
+      // NEW metadata for table columns/filters
+      bookingType: "Normal",            // member flow = normal (not special/individual)
+      who: "member",
     });
 
     return NextResponse.json({ ok: true, id: String(created._id) });
