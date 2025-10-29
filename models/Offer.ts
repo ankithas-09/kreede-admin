@@ -1,6 +1,5 @@
 // models/Offer.ts
 import mongoose, { Schema, type Model } from "mongoose";
-// ✅ Use the SAME connection your bookings use
 import { bookingConnection } from "@/lib/dbBookings";
 
 export type OfferType = "flat" | "conditional";
@@ -29,25 +28,25 @@ export interface OfferDoc extends mongoose.Document {
 
 const ConditionalRuleSchema = new Schema<ConditionalRule>(
   {
-    label: { type: String, required: true, trim: true },
-    price: { type: Number, required: true, min: 0 },
-    criteria: { type: String, required: false, trim: true }, // free text
+    label:   { type: String, required: true, trim: true },
+    price:   { type: Number, required: true, min: 0 },
+    criteria:{ type: String, required: false, trim: true },
   },
   { _id: false }
 );
 
 const OfferSchema = new Schema<OfferDoc>(
   {
-    title: { type: String, required: true, trim: true },
-    description: { type: String, trim: true },
-    type: { type: String, enum: ["flat", "conditional"], required: true },
-    dateFrom: { type: Date, required: true },
-    dateTo: { type: Date, required: true },
-    timeFrom: { type: String, required: true }, // "06:00"
-    timeTo:   { type: String, required: true }, // "10:00"
+    title:     { type: String, required: true, trim: true },
+    description:{ type: String, trim: true },
+    type:      { type: String, enum: ["flat", "conditional"], required: true },
+    dateFrom:  { type: Date, required: true },
+    dateTo:    { type: Date, required: true },
+    timeFrom:  { type: String, required: true }, // "06:00"
+    timeTo:    { type: String, required: true }, // "10:00"
     flatPrice: { type: Number, min: 0 },
-    rules: { type: [ConditionalRuleSchema], default: [] },
-    active: { type: Boolean, default: true },
+    rules:     { type: [ConditionalRuleSchema], default: [] },
+    active:    { type: Boolean, default: true },
   },
   { timestamps: true }
 );
@@ -59,7 +58,6 @@ export type OfferModelType = Model<OfferDoc>;
 let _OfferModel: OfferModelType | null = null;
 
 async function getBookingsConn(): Promise<mongoose.Connection> {
-  // bookingConnection could be either a function or a Connection object in your codebase.
   const maybeFn = bookingConnection as unknown as (() => Promise<mongoose.Connection>) | mongoose.Connection;
   return typeof maybeFn === "function" ? await (maybeFn as any)() : (maybeFn as mongoose.Connection);
 }
@@ -67,14 +65,7 @@ async function getBookingsConn(): Promise<mongoose.Connection> {
 export async function getOfferModel(): Promise<OfferModelType> {
   if (_OfferModel) return _OfferModel;
   const conn = await getBookingsConn();
-
-  // ✅ Explicit collection name "offers" to ensure it lands in kreede_booking.offers
-  _OfferModel =
-    (conn.models.Offer as OfferModelType | undefined) ??
-    conn.model<OfferDoc>("Offer", OfferSchema, "offers");
-
-  // Optional: quick visibility in logs to confirm DB/collection
-  // console.log("[OfferModel] db=%s collection=%s", conn.name, _OfferModel.collection.name);
-
+  _OfferModel = (conn.models.Offer as OfferModelType | undefined)
+    ?? conn.model<OfferDoc>("Offer", OfferSchema, "offers"); // explicit collection
   return _OfferModel;
 }

@@ -6,6 +6,7 @@ import CancelButton from "./CancelButton";
 import MarkPaidButton from "./MarkPaidButton";
 import AddBookingButton from "./AddBookingButton";
 import ClearAllBookingsButton from "./ClearAllBookingsButton";
+import SpecialBookingButton from "./SpecialBookingButton"; // ⟵ NEW
 
 type SearchParams = {
   q?: string;
@@ -372,6 +373,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <AddBookingButton />
+          <SpecialBookingButton /> {/* ⟵ NEW */}
           <a
             href="/dashboard"
             className="btn"
