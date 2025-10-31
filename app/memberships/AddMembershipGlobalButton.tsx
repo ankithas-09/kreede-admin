@@ -66,7 +66,7 @@ export default function AddMembershipGlobalButton() {
 
   // step 2: plan + amount + aadhar/newMember + memberId (restore)
   const [planId, setPlanId] = useState<Plan>("1M");
-  const [amount, setAmount] = useState<number>(2499);
+  const [amount, setAmount] = useState<number>(3000);
   const [aadhar, setAadhar] = useState<string>("");
   const [newMember, setNewMember] = useState<boolean>(false);
   const [memberId, setMemberId] = useState<string>(""); // ← prefilled for restore
@@ -84,16 +84,16 @@ export default function AddMembershipGlobalButton() {
       // ✅ Child pricing: only 1M is valid; fixed ₹2500
       return 2500;
     }
-    if (p === "1M") return 2499;
-    if (p === "3M") return 6999;
-    if (p === "6M") return 13499;
-    return 2499;
+    if (p === "1M") return 3000;
+    if (p === "3M") return 8000;
+    if (p === "6M") return 16000;
+    return 3000;
   }
 
   // When plan OR child flag changes, reset amount appropriately.
   useEffect(() => {
     const base = baseAmountForPlan(planId, isChild);
-    // If child, ignore the new-member fee; otherwise apply it
+    // If child, ignore the new-membr fee; otherwise apply it
     setAmount(isChild ? base : base + (newMember ? 500 : 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planId, isChild]);
@@ -272,7 +272,7 @@ export default function AddMembershipGlobalButton() {
     setResults([]);
     setSelected(null);
     setPlanId("1M");
-    setAmount(2499);
+    setAmount(3000);
     setAadhar("");
     setNewMember(false);
     setMode("new");
