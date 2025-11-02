@@ -4,7 +4,8 @@ import { BookingModel, type BookingDoc } from "@/models/Booking";
 import { GuestBookingModel, type GuestBookingDoc } from "@/models/GuestBooking";
 import { RefundModel } from "@/models/Refund";
 import { MembershipModel } from "@/models/Membership";
-import { UserModel } from "@/models/User"; // ⬅️ added
+import { UserModel } from "@/models/User";
+import { appendCancellations, type CancelRowIn } from "@/lib/googleSheets";
 
 /* ---------------- Cashfree helpers ---------------- */
 function cashfreeBase() {
@@ -135,7 +136,15 @@ function isNonGatewayBooking(b: { amount?: number; paymentRef?: string; orderId?
   return amount <= 0 || ref === "MEMBERSHIP" || ref === "CASH" || !orderId || orderId.startsWith("admin_");
 }
 
-// ⬇️ NEW: resolve users._id from email or username, then restore exactly 1 credit atomically
+/** Derive "who" for Sheets logging without relying on schema extras */
+function deriveWho(isGuest: boolean, paymentRef?: string): "member" | "user" | "guest" {
+  if (isGuest) return "guest";
+  const refUp = String(paymentRef || "").toUpperCase();
+  if (refUp === "MEMBERSHIP") return "member";
+  return "user";
+}
+
+// ⬇️ resolve users._id from email or username, then restore exactly 1 credit atomically
 async function restoreOneCreditAtomicByEmailOrUsername(userEmail?: string, usernameHint?: string) {
   const User = await UserModel();
   const userDoc = await User.findOne({
@@ -210,13 +219,16 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       return NextResponse.json({ error: "Slot not found in booking" }, { status: 404 });
     }
 
-    const rawAmount = Number(doc.amount);
+    const rawAmount = Number((doc as any).amount);
     const amount = Number.isFinite(rawAmount) ? Math.max(0, rawAmount) : 0;
-    const currency = doc.currency || "INR";
-    const orderId = String(doc.orderId || "");
-    const paymentRef = String((booking ? booking.paymentRef : guest?.paymentRef) || "");
+    const currency = (doc as any).currency || "INR";
+    const orderId = String((doc as any).orderId || "");
+    const paymentRef = String(booking ? (booking as any).paymentRef : (guest as any)?.paymentRef || "");
+    const dateStr = (doc as { date?: string }).date || "—";
+    const who = deriveWho(isGuest, paymentRef);
 
     const targetSlot = slots[targetIdx];
+    const perSlotRefund = amount > 0 && totalSlots > 0 ? Number((amount / totalSlots).toFixed(2)) : 0;
 
     // Membership / free (no gateway) → restore 1 credit
     if (!isGuest && (amount <= 0 || paymentRef.toUpperCase() === "MEMBERSHIP" || !orderId)) {
@@ -251,7 +263,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
           },
         });
 
-        // ⬇️ Restore 1 credit to the correct membership using email/username -> users._id
+        // Restore 1 credit
         const ok = await restoreOneCreditAtomicByEmailOrUsername(
           booking ? (booking as { userEmail?: string }).userEmail : undefined,
           booking ? (booking as { userId?: string }).userId : undefined
@@ -261,6 +273,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
         }
       }
 
+      // Pull the slot (and delete booking if none left)
       await Booking.updateOne(
         { _id: (doc as { _id: string })._id },
         { $pull: { slots: { courtId: targetSlot.courtId, start: targetSlot.start, end: targetSlot.end } } }
@@ -269,13 +282,32 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       const noSlotsLeft = !after || !Array.isArray(after.slots) || after.slots.length === 0;
       if (noSlotsLeft) await Booking.findByIdAndDelete(id);
 
+      // Sheets append (single slot cancel)
+      try {
+        const row: CancelRowIn = {
+          date: dateStr,
+          courtId: targetSlot.courtId ?? null,
+          start: targetSlot.start || "—",
+          end: targetSlot.end || "—",
+          userName: (booking as any)?.userName || "—",
+          who,
+          bookingType: "Normal",
+          paymentRef: paymentRef || "—",
+          amount: null, // free/membership
+          currency,
+          refundStatus: "NO_REFUND_REQUIRED",
+          note: "Single slot cancel (membership/free)",
+        };
+        await appendCancellations([row]);
+      } catch (e) {
+        console.error("Sheets append (single slot / membership) failed:", e);
+      }
+
       return NextResponse.json({ ok: true, action: "slot_cancelled", refundStatus: "NO_REFUND_REQUIRED" });
     }
 
     // Guest or Admin CASH (non-gateway)
     if (isNonGatewayBooking(doc)) {
-      const perSlotRefund = amount > 0 && totalSlots > 0 ? Number((amount / totalSlots).toFixed(2)) : 0;
-
       await Refund.create({
         kind: "booking_slot",
         bookingId: String((doc as { _id: string })._id),
@@ -299,12 +331,13 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
         },
       });
 
+      // Pull / decrement / delete if empty
       if (isGuest) {
         await GuestBooking.updateOne(
           { _id: (doc as { _id: string })._id },
           {
             $pull: { slots: { courtId: targetSlot.courtId, start: targetSlot.start, end: targetSlot.end } },
-            ...(amount > 0 && totalSlots > 0 ? { $inc: { amount: -Number((amount / totalSlots).toFixed(2)) } } : {}),
+            ...(amount > 0 && totalSlots > 0 ? { $inc: { amount: -perSlotRefund } } : {}),
           }
         );
         const after = await GuestBooking.findById(id).select({ slots: 1 }).lean<{ slots?: Slot[] } | null>();
@@ -315,7 +348,7 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
           { _id: (doc as { _id: string })._id },
           {
             $pull: { slots: { courtId: targetSlot.courtId, start: targetSlot.start, end: targetSlot.end } },
-            ...(amount > 0 && totalSlots > 0 ? { $inc: { amount: -Number((amount / totalSlots).toFixed(2)) } } : {}),
+            ...(amount > 0 && totalSlots > 0 ? { $inc: { amount: -perSlotRefund } } : {}),
           }
         );
         const after = await Booking.findById(id).select({ slots: 1 }).lean<{ slots?: Slot[] } | null>();
@@ -323,17 +356,39 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
         if (noSlotsLeft) await Booking.findByIdAndDelete(id);
       }
 
+      // Sheets append (single slot cancel)
+      try {
+        const row: CancelRowIn = {
+          date: dateStr,
+          courtId: targetSlot.courtId ?? null,
+          start: targetSlot.start || "—",
+          end: targetSlot.end || "—",
+          userName: isGuest ? (guest as any)?.userName || "Guest" : (booking as any)?.userName || "—",
+          // include phone for guest if available
+          ...(isGuest && (guest as any)?.phone_number ? { phone: String((guest as any).phone_number) } : {}),
+          who,
+          bookingType: "Normal",
+          paymentRef: paymentRef || "—",
+          amount: perSlotRefund || null,
+          currency,
+          refundStatus: "NO_REFUND_REQUIRED",
+          note: "Single slot cancel (offline/admin cash)",
+        };
+        await appendCancellations([row]);
+      } catch (e) {
+        console.error("Sheets append (single slot / offline) failed:", e);
+      }
+
       return NextResponse.json({
         ok: true,
         action: "slot_cancelled",
-        refunded: amount > 0 && totalSlots > 0 ? Number((amount / totalSlots).toFixed(2)) : 0,
+        refunded: perSlotRefund,
         currency,
         refundStatus: "NO_REFUND_REQUIRED",
       });
     }
 
     // Customer online booking → Cashfree (per-slot refund)
-    const perSlotRefund = amount > 0 && totalSlots > 0 ? Number((amount / totalSlots).toFixed(2)) : 0;
     if (perSlotRefund <= 0) {
       return NextResponse.json({ error: "Calculated refund amount is zero or invalid" }, { status: 400 });
     }
@@ -397,6 +452,27 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     const after = await Booking.findById(id).select({ slots: 1 }).lean<{ slots?: Slot[] } | null>();
     const noSlotsLeft = !after || !Array.isArray(after.slots) || after.slots.length === 0;
     if (noSlotsLeft) await Booking.findByIdAndDelete(id);
+
+    // Sheets append (single slot cancel, gateway refund success)
+    try {
+      const row: CancelRowIn = {
+        date: dateStr,
+        courtId: targetSlot.courtId ?? null,
+        start: targetSlot.start || "—",
+        end: targetSlot.end || "—",
+        userName: (booking as any)?.userName || "—",
+        who,
+        bookingType: "Normal",
+        paymentRef: paymentRef || "—",
+        amount: perSlotRefund || null,
+        currency,
+        refundStatus: "SUCCESS",
+        note: "Single slot cancel (gateway refund)",
+      };
+      await appendCancellations([row]);
+    } catch (e) {
+      console.error("Sheets append (single slot / cashfree) failed:", e);
+    }
 
     return NextResponse.json({
       ok: true,

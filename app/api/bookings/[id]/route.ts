@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { BookingModel, type BookingDoc } from "@/models/Booking";
 import { GuestBookingModel, type GuestBookingDoc } from "@/models/GuestBooking";
 import { RefundModel } from "@/models/Refund";
+import { appendCancellations, type CancelRowIn } from "@/lib/googleSheets";
 
 /* ---------------- Cashfree helpers ---------------- */
 function cashfreeBase() {
@@ -104,6 +105,23 @@ type GuestLean = Pick<
   "_id" | "orderId" | "userName" | "amount" | "currency" | "paymentRef" | "date" | "slots"
 > & { _id: string };
 
+/** Derive "who" for Sheets logging without relying on schema extras */
+function deriveWho(isGuest: boolean, paymentRef?: string): "member" | "user" | "guest" {
+  if (isGuest) return "guest";
+  const refUp = String(paymentRef || "").toUpperCase();
+  if (refUp === "MEMBERSHIP") return "member";
+  return "user";
+}
+
+/** Compute per-slot amount for logging rows */
+function computePerSlotAmount(total?: number, slotsCount?: number): number | null {
+  const t = Number(total);
+  if (!Number.isFinite(t)) return null;
+  const c = Number(slotsCount);
+  if (!Number.isFinite(c) || c <= 0) return t;
+  return Math.round(t / c);
+}
+
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   try {
     const id = params?.id;
@@ -134,6 +152,11 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     const amount = Number.isFinite(rawAmount) ? Math.max(0, rawAmount) : 0;
     const currency = doc.currency || "INR";
     const orderId = String(doc.orderId || "");
+    const dateStr = (doc as { date?: string }).date || "—";
+    const slots = (doc as { slots?: { courtId?: number; start?: string; end?: string }[] }).slots || [];
+    const perSlot = computePerSlotAmount(doc.amount, slots.length);
+    const paymentRef = (doc as { paymentRef?: string }).paymentRef || "—";
+    const who = deriveWho(isGuest, paymentRef);
 
     // Direct cancel path (admin/member/guest)
     if (isNonGatewayBooking(doc)) {
@@ -153,11 +176,36 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
         gateway: "NONE",
         meta: {
           isGuest,
-          date: (doc as { date?: string }).date,
-          slots: (doc as { slots?: unknown[] }).slots,
+          date: dateStr,
+          slots,
           mode: "full_booking_cancel",
         },
       });
+
+      // Append one cancellation row per slot to Sheet 2 (NO_REFUND_REQUIRED)
+      try {
+        const rows: CancelRowIn[] = (slots.length ? slots : [{ courtId: null as number | null, start: "—", end: "—" }]).map((s): CancelRowIn => {
+          const base: CancelRowIn = {
+            date: dateStr,
+            courtId: typeof s.courtId === "number" ? s.courtId : null,
+            start: s.start || "—",
+            end: s.end || "—",
+            userName: booking ? (booking.userName || "—") : (guest?.userName || "Guest"),
+            who,                          // "member" | "user" | "guest"
+            bookingType: "Normal",        // literal union
+            paymentRef,
+            amount: perSlot,
+            currency,
+            refundStatus: "NO_REFUND_REQUIRED",
+            note: "Full booking cancel (offline/membership)",
+          };
+          // Optional phone enrichment can be added here in future
+          return base;
+        });
+        await appendCancellations(rows);
+      } catch (sheetErr) {
+        console.error("Sheets append (full cancel / no-gateway) failed:", sheetErr);
+      }
 
       if (booking) await Booking.findByIdAndDelete(id);
       else await GuestBooking.findByIdAndDelete(id);
@@ -201,11 +249,35 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
       gateway: "CASHFREE",
       meta: {
         raw: cf.raw,
-        date: (doc as { date?: string }).date,
-        slots: (doc as { slots?: unknown[] }).slots,
+        date: dateStr,
+        slots,
         mode: "full_booking_cancel",
       },
     });
+
+    // Append one cancellation row per slot to Sheet 2 with gateway status
+    try {
+      const rows: CancelRowIn[] = (slots.length ? slots : [{ courtId: null as number | null, start: "—", end: "—" }]).map((s): CancelRowIn => {
+        const base: CancelRowIn = {
+          date: dateStr,
+          courtId: typeof s.courtId === "number" ? s.courtId : null,
+          start: s.start || "—",
+          end: s.end || "—",
+          userName: booking ? (booking.userName || "—") : (guest?.userName || "Guest"),
+          who,
+          bookingType: "Normal",
+          paymentRef,
+          amount: perSlot,
+          currency,
+          refundStatus: legacy, // SUCCESS / FAILED / PENDING
+          note: "Full booking cancel (gateway refund)",
+        };
+        return base;
+      });
+      await appendCancellations(rows);
+    } catch (sheetErr) {
+      console.error("Sheets append (full cancel / cashfree) failed:", sheetErr);
+    }
 
     if (legacy === "REFUND_FAILED") {
       return NextResponse.json({ error: "Cashfree refund failed", details: cf.raw }, { status: 502 });

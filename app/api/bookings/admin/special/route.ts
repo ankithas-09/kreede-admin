@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { getOfferModel } from "@/models/Offer";
 import { BookingModel } from "@/models/Booking";
 import { GuestBookingModel } from "@/models/GuestBooking";
+import { UserModel } from "@/models/User"; // ⬅️ to fetch phone for member/user
+import { bookingToRows, appendRows } from "@/lib/googleSheets"; // ⬅️ Sheets helpers
 
 type SlotIn = { courtId: number; start: string; end: string };
 
@@ -132,7 +134,9 @@ export async function POST(req: Request) {
     const paymentRef =
       body.paymentRef || (isMember ? "MEMBERSHIP" : "PAID.CASH");
 
-    // Guest special bookings → guest_bookings
+    // =========================
+    // Guest special bookings
+    // =========================
     if (isGuest) {
       const created = await GuestBooking.create({
         orderId,
@@ -147,6 +151,24 @@ export async function POST(req: Request) {
         adminPaid: true,
       });
 
+      // ---- Google Sheets append (guest) ----
+      try {
+        const rows = bookingToRows({
+          userName: body.guestName!,
+          phone: body.guestPhone!,
+          date: body.date,
+          paymentRef,
+          adminPaid: true,
+          totalAmount,
+          slots: normalizedSlots,
+          bookingType: "Special",
+          who: "guest",
+        });
+        await appendRows(rows);
+      } catch (sheetErr) {
+        console.error("Sheets append (special guest) failed:", sheetErr);
+      }
+
       return NextResponse.json({
         ok: true,
         bookingId: String(created._id),
@@ -155,7 +177,9 @@ export async function POST(req: Request) {
       });
     }
 
+    // =========================
     // Member/User → bookings
+    // =========================
     const created = await Booking.create({
       orderId,
       date: body.date,
@@ -165,11 +189,41 @@ export async function POST(req: Request) {
       status: "PAID",
       paymentRef,
       adminPaid: true,
-      // IMPORTANT: no comparison to "guest" here; TS knows we're in member/user branch
       userId: body.userId || undefined,
       userName: body.userName || "—",
       userEmail: body.userEmail || undefined,
     });
+
+    // Resolve phone for member/user if possible
+    let phoneForSheet = "";
+    try {
+      const User = await UserModel();
+      const u = await User.findOne({
+        $or: [
+          ...(body.userEmail ? [{ email: String(body.userEmail).toLowerCase() }] : []),
+          ...(body.userId ? [{ userId: body.userId }] : []),
+        ],
+      }).select({ phone: 1 }).lean();
+      phoneForSheet = String(u?.phone || "");
+    } catch { /* ignore */ }
+
+    // ---- Google Sheets append (member/user) ----
+    try {
+      const rows = bookingToRows({
+        userName: body.userName || "—",
+        phone: phoneForSheet,
+        date: body.date,
+        paymentRef,
+        adminPaid: true,
+        totalAmount,
+        slots: normalizedSlots,
+        bookingType: "Special",
+        who: isMember ? "member" : "user",
+      });
+      await appendRows(rows);
+    } catch (sheetErr) {
+      console.error("Sheets append (special member/user) failed:", sheetErr);
+    }
 
     return NextResponse.json({
       ok: true,

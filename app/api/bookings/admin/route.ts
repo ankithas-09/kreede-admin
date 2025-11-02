@@ -4,6 +4,7 @@ import { BookingModel } from "@/models/Booking";
 import { GuestBookingModel } from "@/models/GuestBooking";
 import { MembershipModel } from "@/models/Membership";
 import { UserModel } from "@/models/User";
+import { bookingToRows, appendRows } from "@/lib/googleSheets"; // ⬅️ Sheets helper
 
 // 🔁 Unique admin order ids
 function genAdminOrderId() {
@@ -155,6 +156,8 @@ export async function POST(req: Request) {
     let reservedCredits = false;
     let memberUserObjectId = "";
 
+    let phoneForSheet: string = ""; // we’ll try to fill this for member/user
+
     if (isMember) {
       const User = await UserModel();
       const userDoc = await User.findOne({
@@ -168,6 +171,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Member not found" }, { status: 404 });
       }
       memberUserObjectId = String(userDoc._id);
+      phoneForSheet = String(userDoc.phone || "");
 
       const Membership = await MembershipModel();
       const updated = await Membership.findOneAndUpdate(
@@ -196,6 +200,18 @@ export async function POST(req: Request) {
       }
 
       reservedCredits = true;
+    } else if (isUser) {
+      // Try to resolve phone via User collection for regular users
+      try {
+        const User = await UserModel();
+        const u = await User.findOne({
+          $or: [
+            { email: String(userEmail || "").toLowerCase() },
+            ...(userId ? [{ userId }] : []),
+          ],
+        }).select({ phone: 1 }).lean();
+        phoneForSheet = String(u?.phone || "");
+      } catch { /* ignore */ }
     }
 
     // ⬇️ NEW: derive bookingType + who for persistence
@@ -227,6 +243,25 @@ export async function POST(req: Request) {
           // If you add fields to the GuestBooking schema later, you can also persist:
           // offerId, offerName, offerConditionKeys
         });
+
+        // ---- Google Sheets append (guest) ----
+        try {
+          const rows = bookingToRows({
+            userName: created.userName || "Guest",
+            phone: String(created.phone_number || ""),
+            date: dateStr,
+            paymentRef,
+            adminPaid,
+            totalAmount,
+            slots: slots || [],
+            bookingType,
+            who: whoField,
+          });
+          await appendRows(rows);
+        } catch (sheetErr) {
+          console.error("Sheets append (guest admin) failed:", sheetErr);
+        }
+
         return NextResponse.json({ ok: true, id: String(created._id) });
       }
 
@@ -250,6 +285,24 @@ export async function POST(req: Request) {
         // If you add fields to the Booking schema later, persist:
         // offerId, offerName, offerConditionKeys
       });
+
+      // ---- Google Sheets append (member/user) ----
+      try {
+        const rows = bookingToRows({
+          userName: created.userName || "—",
+          phone: phoneForSheet, // may be blank if not found
+          date: dateStr,
+          paymentRef,
+          adminPaid,
+          totalAmount,
+          slots: slots || [],
+          bookingType,
+          who: whoField,
+        });
+        await appendRows(rows);
+      } catch (sheetErr) {
+        console.error("Sheets append (admin user/member) failed:", sheetErr);
+      }
 
       return NextResponse.json({ ok: true, id: String(created._id) });
     } catch (createErr) {
