@@ -57,6 +57,16 @@ function withinRange(hhmm: string, from: string, to: string) {
   const v = toMin(hhmm), f = toMin(from), t = toMin(to);
   return !Number.isNaN(v) && !Number.isNaN(f) && !Number.isNaN(t) && v >= f && v <= t;
 }
+/** clamp yyyy-mm-dd into [min,max] (inclusive) */
+function clampDate(value: string, min?: string, max?: string) {
+  if (!value) return value;
+  const v = new Date(`${value}T00:00:00.000Z`);
+  const lo = min ? new Date(`${min}T00:00:00.000Z`) : undefined;
+  const hi = max ? new Date(`${max}T00:00:00.000Z`) : undefined;
+  if (lo && v < lo) return isoDateOnly(lo);
+  if (hi && v > hi) return isoDateOnly(hi);
+  return value;
+}
 
 export default function SpecialBookingButton() {
   const [open, setOpen] = useState(false);
@@ -112,16 +122,10 @@ export default function SpecialBookingButton() {
 
   /* ------------- Reset when offer changes ------------------------- */
   useEffect(() => {
+    // On selecting an offer, reset state and clamp date strictly into offer range
     if (pickedOffer) {
-      setDate((d) => {
-        if (!d) return isoDateOnly(pickedOffer.dateFrom);
-        const dt = new Date(d + "T00:00:00.000Z");
-        const min = new Date(pickedOffer.dateFrom);
-        const max = new Date(pickedOffer.dateTo);
-        if (dt < min) return isoDateOnly(min);
-        if (dt > max) return isoDateOnly(max);
-        return d;
-      });
+      const initial = isoDateOnly(pickedOffer.dateFrom);
+      setDate(initial);
       setSelectedRuleLabel("");
       setSelected([]);
       setAvailability({});
@@ -205,28 +209,34 @@ export default function SpecialBookingButton() {
   }, [availability]);
 
   /* -------- Offer hour window → show only within window ----------- */
-  const offerHourStart = pickedOffer ? Math.max(0, toHour(pickedOffer.timeFrom)) : 6;
-  const offerHourEndExclusive = pickedOffer ? Math.min(24, toHour(pickedOffer.timeTo)) : 23;
-  const START_HOUR = Number.isFinite(offerHourStart) ? offerHourStart : 6;
-  const END_HOUR_EX = Number.isFinite(offerHourEndExclusive) ? offerHourEndExclusive : 23;
+  const START_HOUR = useMemo(() => {
+    return pickedOffer ? Math.max(0, toHour(pickedOffer.timeFrom)) : 6;
+  }, [pickedOffer]);
+
+  const END_HOUR_EX = useMemo(() => {
+    return pickedOffer ? Math.min(24, toHour(pickedOffer.timeTo)) : 23;
+  }, [pickedOffer]);
 
   function toggle(courtId: number, hour: number) {
     if (!pickedOffer) return;
     const start = hhmm(hour);
     const end = hhmm(hour + 1);
-    if (!withinRange(start, pickedOffer.timeFrom, pickedOffer.timeTo) ||
-        !withinRange(end, pickedOffer.timeFrom, pickedOffer.timeTo)) {
+
+    // Guard: only within the active offer's time window
+    if (
+      !withinRange(start, pickedOffer.timeFrom, pickedOffer.timeTo) ||
+      !withinRange(end, pickedOffer.timeFrom, pickedOffer.timeTo)
+    ) {
       return;
     }
+
     const key = `${courtId}_${start}_${end}`;
     if (bookedSet.has(key)) return;
 
-    const exists = selected.find(s => s.courtId === courtId && s.start === start && s.end === end);
-    if (exists) {
-      setSelected(s => s.filter(x => !(x.courtId === courtId && x.start === start && x.end === end)));
-    } else {
-      setSelected(s => [...s, { courtId, start, end }]);
-    }
+    setSelected((s) => {
+      const exists = s.find((x) => x.courtId === courtId && x.start === start && x.end === end);
+      return exists ? s.filter((x) => !(x.courtId === courtId && x.start === start && x.end === end)) : [...s, { courtId, start, end }];
+    });
   }
 
   /* ---------------------- Offer pricing logic ---------------------- */
@@ -255,7 +265,7 @@ export default function SpecialBookingButton() {
       if (!guestName.trim() || !guestPhone.trim()) return setError("Guest name and phone are required");
     }
 
-    // Safety re-checks
+    // Safety re-checks for window & availability
     for (const s of selected) {
       if (!withinRange(s.start, pickedOffer.timeFrom, pickedOffer.timeTo) ||
           !withinRange(s.end, pickedOffer.timeFrom, pickedOffer.timeTo)) {
@@ -273,9 +283,6 @@ export default function SpecialBookingButton() {
         slots: selected,
         offerId: pickedOffer._id,
         selectedRuleLabel: pickedOffer.type === "conditional" ? selectedRuleLabel : undefined,
-        // Payment semantics:
-        // - Member = MEMBERSHIP (amount forced to 0 in API)
-        // - User/Guest = PAID.CASH (special price)
         paymentRef: who === "member" ? "MEMBERSHIP" : "PAID.CASH",
       };
 
@@ -286,7 +293,6 @@ export default function SpecialBookingButton() {
       } else {
         payload.guestName = guestName.trim();
         payload.guestPhone = guestPhone.trim();
-        // For display in bookings we still need userName:
         payload.userName = guestName.trim();
       }
 
@@ -454,7 +460,11 @@ export default function SpecialBookingButton() {
                       value={date}
                       min={minDate}
                       max={maxDate}
-                      onChange={(e) => { setDate(e.target.value); setSelected([]); }}
+                      onChange={(e) => {
+                        const next = clampDate(e.target.value, minDate, maxDate);
+                        setDate(next);
+                        setSelected([]);
+                      }}
                     />
                     {loadingAvail && (
                       <div style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
@@ -464,7 +474,7 @@ export default function SpecialBookingButton() {
                   </div>
                 )}
 
-                {/* Slot picker (3 courts) within offer window */}
+                {/* Slot picker (3 courts) within offer window only */}
                 {pickedOffer && date && (
                   <div style={{ display: "grid", gap: 12, maxHeight: "48vh", overflowY: "auto", paddingRight: 4, marginTop: 12 }}>
                     {COURTS.map((c) => (
@@ -473,7 +483,7 @@ export default function SpecialBookingButton() {
                           Court {c}
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(110px,1fr))", gap: 8, padding: 12 }}>
-                          {Array.from({ length: Math.max(0, (offerHourEndExclusive - START_HOUR)) }, (_, i) => START_HOUR + i).map((h) => {
+                          {Array.from({ length: Math.max(0, (END_HOUR_EX - START_HOUR)) }, (_, i) => START_HOUR + i).map((h) => {
                             const start = hhmm(h);
                             const end = hhmm(h + 1);
                             const key = `${c}_${start}_${end}`;

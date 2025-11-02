@@ -21,17 +21,32 @@ export async function PATCH(
     }
 
     const body = await req.json().catch(() => ({}));
-    const userId: string | undefined = typeof body.userId === "string" ? body.userId.trim() : undefined;
-    const name: string | undefined   = typeof body.name === "string" ? body.name.trim() : undefined;
-    const email: string | undefined  = typeof body.email === "string" ? body.email.trim().toLowerCase() : undefined;
-    const phone: string | undefined  = typeof body.phone === "string" ? body.phone.trim() : undefined;
-    const dobRaw: string | undefined = body.dob != null ? String(body.dob).trim() : undefined;
 
-    if (!userId && !name && !email && !phone && dobRaw === undefined) {
+    // Pull fields if present; allow empty string for email/dob to "clear"
+    const userId: string | undefined =
+      typeof body.userId === "string" ? body.userId.trim() : undefined;
+    const name: string | undefined =
+      typeof body.name === "string" ? body.name.trim() : undefined;
+    const rawEmail: string | undefined =
+      typeof body.email === "string" ? body.email.trim() : undefined; // may be "" to clear
+    const phone: string | undefined =
+      typeof body.phone === "string" ? body.phone.trim() : undefined;
+    const dobRaw: string | undefined =
+      body.dob != null ? String(body.dob).trim() : undefined; // may be "" to clear
+
+    // Nothing to update?
+    if (
+      userId === undefined &&
+      name === undefined &&
+      rawEmail === undefined &&
+      phone === undefined &&
+      dobRaw === undefined
+    ) {
       return NextResponse.json({ error: "No fields to update." }, { status: 400 });
     }
 
-    if (email && !isEmail(email)) {
+    // Validate optional fields only if provided (and non-empty in case of email)
+    if (rawEmail && !isEmail(rawEmail.toLowerCase())) {
       return NextResponse.json({ error: "Invalid email." }, { status: 400 });
     }
     if (phone && !isPhone(phone)) {
@@ -45,38 +60,65 @@ export async function PATCH(
       return NextResponse.json({ error: "User not found." }, { status: 404 });
     }
 
-    // Uniqueness (exclude current)
+    // Uniqueness checks (exclude current)
     if (userId) {
       const clash = await User.findOne({ _id: { $ne: id }, userId }).lean();
-      if (clash) return NextResponse.json({ error: "A user with this username (userId) already exists." }, { status: 409 });
+      if (clash) {
+        return NextResponse.json(
+          { error: "A user with this username (userId) already exists." },
+          { status: 409 }
+        );
+      }
     }
-    if (email) {
+    // Only check email uniqueness if provided and non-empty (clearing is allowed)
+    if (rawEmail && rawEmail !== "") {
+      const email = rawEmail.toLowerCase();
       const clash = await User.findOne({ _id: { $ne: id }, email }).lean();
-      if (clash) return NextResponse.json({ error: "A user with this email already exists." }, { status: 409 });
+      if (clash) {
+        return NextResponse.json(
+          { error: "A user with this email already exists." },
+          { status: 409 }
+        );
+      }
     }
 
-    // Build update
-    const update: Record<string, unknown> = {};
-    if (userId !== undefined) update.userId = userId;
-    if (name   !== undefined) update.name   = name;
-    if (email  !== undefined) update.email  = email;
-    if (phone  !== undefined) update.phone  = phone;
+    // Build update operators
+    const $set: Record<string, unknown> = {};
+    const $unset: Record<string, unknown> = {};
+
+    if (userId !== undefined) $set.userId = userId;
+    if (name !== undefined) $set.name = name;
+
+    if (rawEmail !== undefined) {
+      if (rawEmail === "") {
+        // Clear the email field
+        $unset.email = "";
+      } else {
+        $set.email = rawEmail.toLowerCase();
+      }
+    }
+
+    if (phone !== undefined) $set.phone = phone;
 
     if (dobRaw !== undefined) {
       if (dobRaw === "") {
-        // allow clearing DOB
-        update.dob = undefined;
+        // Clear DOB
+        $unset.dob = "";
       } else {
         const d = new Date(dobRaw);
         if (isNaN(d.getTime())) {
           return NextResponse.json({ error: "Invalid DOB." }, { status: 400 });
         }
-        update.dob = d.toISOString().slice(0, 10); // YYYY-MM-DD
+        $set.dob = d.toISOString().slice(0, 10); // YYYY-MM-DD
       }
     }
 
+    const updateDoc: Record<string, unknown> = {};
+    if (Object.keys($set).length) updateDoc.$set = $set;
+    if (Object.keys($unset).length) updateDoc.$unset = $unset;
+
     // Update and return the fresh document
-    const updated = await User.findByIdAndUpdate(id, { $set: update }, { new: true }).lean();
+    const updated = await User.findByIdAndUpdate(id, updateDoc, { new: true }).lean();
     if (!updated) {
       return NextResponse.json({ error: "User not found after update." }, { status: 404 });
     }

@@ -48,15 +48,26 @@ export async function POST(req: Request) {
     const body = await req.json();
     const userId = String(body.userId || "").trim();   // “username”
     const name   = String(body.name   || "").trim();
-    const email  = String(body.email  || "").trim().toLowerCase();
+    const email  = String((body.email ?? "")).trim().toLowerCase(); // optional
     const phone  = String(body.phone  || "").trim();
     const dobRaw = body.dob != null ? String(body.dob).trim() : ""; // optional
 
-    if (!userId || !name || !email || !phone) {
-      return NextResponse.json({ error: "All fields except DOB are required." }, { status: 400 });
+    // Required fields: userId, name, phone (email is optional)
+    if (!userId || !name || !phone) {
+      return NextResponse.json(
+        { error: "Username, name and phone are required." },
+        { status: 400 }
+      );
     }
-    if (!isEmail(email)) return NextResponse.json({ error: "Invalid email." }, { status: 400 });
-    if (!isPhone(phone)) return NextResponse.json({ error: "Invalid phone." }, { status: 400 });
+
+    // Validate optional email only if provided
+    if (email && !isEmail(email)) {
+      return NextResponse.json({ error: "Invalid email." }, { status: 400 });
+    }
+
+    if (!isPhone(phone)) {
+      return NextResponse.json({ error: "Invalid phone." }, { status: 400 });
+    }
 
     // Normalize DOB to YYYY-MM-DD if provided
     let dob: string | undefined = undefined;
@@ -65,23 +76,52 @@ export async function POST(req: Request) {
       if (isNaN(d.getTime())) {
         return NextResponse.json({ error: "Invalid DOB." }, { status: 400 });
       }
-      const iso = d.toISOString().slice(0, 10); // YYYY-MM-DD
-      dob = iso;
+      dob = d.toISOString().slice(0, 10); // YYYY-MM-DD
     }
 
     const User = await UserModel();
 
-    // Unique checks
-    const existing = await User.findOne({ $or: [{ userId }, { email }] }).lean();
+    // Unique checks:
+    // - userId always unique
+    // - email unique only if provided
+    const or: Record<string, unknown>[] = [{ userId }];
+    if (email) or.push({ email });
+
+    const existing = await User.findOne({ $or: or }).lean();
     if (existing) {
       const conflict =
-        (existing as { userId?: string })?.userId === userId ? "username (userId)" :
-        (existing as { email?: string })?.email  === email  ? "email" : "record";
-      return NextResponse.json({ error: `A user with this ${conflict} already exists.` }, { status: 409 });
+        (existing as { userId?: string })?.userId === userId
+          ? "username (userId)"
+          : "email";
+      return NextResponse.json(
+        { error: `A user with this ${conflict} already exists.` },
+        { status: 409 }
+      );
     }
 
-    const doc = await User.create({ userId, name, email, phone, dob });
-    return NextResponse.json({ ok: true, user: { _id: doc._id, userId, name, email, phone, dob } }, { status: 201 });
+    // Only set email if present to avoid storing empty string
+    const doc = await User.create({
+      userId,
+      name,
+      email: email || undefined,
+      phone,
+      dob,
+    });
+
+    return NextResponse.json(
+      {
+        ok: true,
+        user: {
+          _id: doc._id,
+          userId,
+          name,
+          email: email || undefined,
+          phone,
+          dob,
+        },
+      },
+      { status: 201 }
+    );
   } catch (e: unknown) {
     // Handle duplicate key (race)
     const err = e as { code?: number; keyPattern?: Record<string, unknown> };

@@ -1,4 +1,3 @@
-// app/users/EditUserButton.tsx
 "use client";
 
 import { useMemo, useState } from "react";
@@ -7,14 +6,13 @@ type UserForEdit = {
   _id: string;
   userId: string;
   name: string;
-  email: string;
+  email?: string;
   phone: string;
-  dob?: string | null; // ISO YYYY-MM-DD or empty
+  dob?: string | null;
 };
 
 function isoDateOnly(v?: string | null) {
   if (!v) return "";
-  // Accept either YYYY-MM-DD or a full ISO string
   const asDate = new Date(v);
   if (Number.isNaN(asDate.getTime())) return "";
   return asDate.toISOString().slice(0, 10);
@@ -25,10 +23,9 @@ export default function EditUserButton({ user }: { user: UserForEdit }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Local form state (prefill)
   const [userId, setUserId] = useState(user.userId);
   const [name, setName] = useState(user.name);
-  const [email, setEmail] = useState(user.email);
+  const [email, setEmail] = useState(user.email || "");
   const [phone, setPhone] = useState(user.phone);
   const [dob, setDob] = useState(isoDateOnly(user.dob ?? ""));
 
@@ -46,9 +43,9 @@ export default function EditUserButton({ user }: { user: UserForEdit }) {
         body: JSON.stringify({
           userId: userId.trim(),
           name: name.trim(),
-          email: email.trim(),
+          email: email.trim() || undefined, // optional
           phone: phone.trim(),
-          dob: dob || undefined, // optional
+          dob: dob || undefined,
         }),
       });
 
@@ -60,7 +57,6 @@ export default function EditUserButton({ user }: { user: UserForEdit }) {
       }
 
       setOpen(false);
-      // simple: refresh page to reflect updates
       window.location.reload();
     } catch {
       setError("Failed to update user");
@@ -138,13 +134,12 @@ export default function EditUserButton({ user }: { user: UserForEdit }) {
                   />
                 </div>
                 <div>
-                  <label className="label">Email *</label>
+                  <label className="label">Email (optional)</label>
                   <input
                     type="email"
                     className="input"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    required
                     placeholder="name@email.com"
                   />
                 </div>

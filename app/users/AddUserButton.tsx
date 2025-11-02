@@ -1,4 +1,3 @@
-// app/users/AddUserButton.tsx
 "use client";
 
 import { useState } from "react";
@@ -23,7 +22,13 @@ export default function AddUserButton() {
       const res = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, name, email, phone, dob: dob || undefined }),
+        body: JSON.stringify({
+          userId,
+          name,
+          email: email || undefined, // optional
+          phone,
+          dob: dob || undefined,
+        }),
       });
 
       const j = await res.json().catch(() => ({}));
@@ -116,13 +121,12 @@ export default function AddUserButton() {
                   />
                 </div>
                 <div>
-                  <label className="label">Email *</label>
+                  <label className="label">Email (optional)</label>
                   <input
                     type="email"
                     className="input"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    required
                     placeholder="name@email.com"
                   />
                 </div>
