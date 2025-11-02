@@ -1,5 +1,6 @@
 // app/users/page.tsx
 import AddUserButton from "./AddUserButton";
+import EditUserButton from "./EditUserButton"; // ⬅️ NEW
 import { UserModel } from "@/models/User";
 import { MembershipModel } from "@/models/Membership";
 
@@ -67,12 +68,8 @@ export default async function UsersPage({
 
   // 2) Get memberships for these users
   const ids = users.map((u) => toIdString(u._id));
-  const emails = users
-    .map((u) => (u.email || "").toLowerCase())
-    .filter(Boolean);
-  const names = users
-    .map((u) => (u.name || "").trim())
-    .filter(Boolean);
+  const emails = users.map((u) => (u.email || "").toLowerCase()).filter(Boolean);
+  const names = users.map((u) => (u.name || "").trim()).filter(Boolean);
 
   const members = (await Membership.find({
     $or: [
@@ -173,7 +170,7 @@ export default async function UsersPage({
             aria-label="Search users"
             style={{ flex: 2, minWidth: 160 }}
           />
-        <select
+          <select
             name="filter"
             defaultValue={filter}
             className="input"
@@ -187,7 +184,11 @@ export default async function UsersPage({
           <button className="btn btn--primary" type="submit">
             Apply
           </button>
-          <a href="/users" className="btn" style={{ background: "#fff", border: "1px solid rgba(17,17,17,0.12)" }}>
+          <a
+            href="/users"
+            className="btn"
+            style={{ background: "#fff", border: "1px solid rgba(17,17,17,0.12)" }}
+          >
             Reset
           </a>
         </form>
@@ -202,6 +203,7 @@ export default async function UsersPage({
                 <th style={{ minWidth: 130 }}>Phone</th>
                 <th style={{ minWidth: 130 }}>DOB</th>
                 <th style={{ minWidth: 260 }}>Membership Details</th>
+                <th style={{ minWidth: 120 }}>Actions</th> {/* ⬅️ NEW */}
               </tr>
             </thead>
             <tbody>
@@ -221,12 +223,24 @@ export default async function UsersPage({
                     <td>{u.phone || "—"}</td>
                     <td>{fmtDate(u.dob)}</td>
                     <td>{details}</td>
+                    <td>
+                      <EditUserButton
+                        user={{
+                          _id: toIdString(u._id),
+                          userId: u.userId || "",
+                          name: u.name || "",
+                          email: u.email || "",
+                          phone: u.phone || "",
+                          dob: typeof u.dob === "string" ? u.dob : u.dob?.toString(),
+                        }}
+                      />
+                    </td>
                   </tr>
                 );
               })}
               {filteredUsers.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: "center", padding: "18px" }}>
+                  <td colSpan={7} style={{ textAlign: "center", padding: "18px" }}>
                     No users found{q ? ` for “${q}”` : ""}.
                   </td>
                 </tr>
