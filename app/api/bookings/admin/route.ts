@@ -25,7 +25,7 @@ type AdminCreateBody = {
   guestPhone?: string;        // phone collected in UI for guest
 
   // Existing pricing selector
-  pricingMode?: "court" | "individual";
+  pricingMode?: "court" | "individual" | "individual2"; // ⬅️ NEW
 
   // 🔵 Offer booking (optional)
   offerId?: string;                 // selected offer _id
@@ -123,7 +123,11 @@ export async function POST(req: Request) {
 
       // Fallback to normal modes
       const perSlot =
-        pricingMode === "individual" ? 150 : getCourtSlotPrice(dateStr);
+        pricingMode === "individual"
+          ? 150
+          : pricingMode === "individual2"
+            ? 300
+            : getCourtSlotPrice(dateStr);
       return Math.max(0, Math.round(perSlot * slotsCount));
     }
 
@@ -216,7 +220,9 @@ export async function POST(req: Request) {
 
     // ⬇️ NEW: derive bookingType + who for persistence
     const bookingType: "Normal" | "Individual" | "Special" =
-      isOffer ? "Special" : (pricingMode === "individual" ? "Individual" : "Normal");
+      isOffer
+        ? "Special"
+        : (pricingMode === "individual" || pricingMode === "individual2" ? "Individual" : "Normal");
 
     const whoField: "member" | "user" | "guest" =
       isMember ? "member" : (isUser ? "user" : "guest");

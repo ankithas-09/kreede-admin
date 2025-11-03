@@ -7,7 +7,7 @@ type UserLite = { _id: string; userId?: string; name?: string; email?: string; p
 type Availability = Record<number, { start: string; end: string }[]>;
 type Slot = { courtId: number; start: string; end: string };
 type Who = "member" | "user" | "guest";
-type PricingMode = "court" | "individual";
+type PricingMode = "court" | "individual" | "individual2"; // ⬅️ NEW
 
 type AdminBookingBody = {
   type: Who;
@@ -200,7 +200,11 @@ export default function AddBookingButton() {
   const effectivePerSlot =
     who === "member"
       ? 0
-      : (pricingMode === "individual" ? 150 : pricePerSlotCourt(date));
+      : (pricingMode === "individual"
+          ? 150
+          : pricingMode === "individual2"
+            ? 300
+            : pricePerSlotCourt(date));
 
   const totalAmount = who === "member" ? 0 : totalSlots * effectivePerSlot;
 
@@ -377,6 +381,9 @@ export default function AddBookingButton() {
                         {pricingMode === "individual" && (
                           <> • <b>₹150/slot</b></>
                         )}
+                        {pricingMode === "individual2" && (
+                          <> • <b>₹300/slot</b></>
+                        )}
                       </div>
                     )}
                   </div>
@@ -389,6 +396,7 @@ export default function AddBookingButton() {
                     >
                       <option value="court">Court</option>
                       <option value="individual">Individual (₹150/slot)</option>
+                      <option value="individual2">Individuals (2) (₹300/slot)</option>
                     </select>
                   </div>
                 </div>
