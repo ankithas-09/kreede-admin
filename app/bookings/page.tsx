@@ -1,4 +1,5 @@
 // app/bookings/page.tsx
+import React from "react";
 import { BookingModel } from "@/models/Booking";
 import { GuestBookingModel } from "@/models/GuestBooking";
 import { UserModel } from "@/models/User";
@@ -48,6 +49,33 @@ type GuestBookingLean = {
   bookingType?: "Normal" | "Special" | "Individual";
   who?: "member" | "user" | "guest";
 };
+
+// Helper: show dates as dd/mm/yyyy for UI
+function formatDisplayDate(raw?: string): string {
+  if (!raw) return "—";
+
+  // Already dd/mm/yyyy → return as-is
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) return raw;
+
+  // yyyy-mm-dd → convert
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (isoMatch) {
+    const [, y, m, d] = isoMatch;
+    return `${d}/${m}/${y}`;
+  }
+
+  // Fallback: try to parse any other valid date string
+  const dt = new Date(raw);
+  if (!isNaN(dt.getTime())) {
+    const d = String(dt.getDate()).padStart(2, "0");
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const y = dt.getFullYear();
+    return `${d}/${m}/${y}`;
+  }
+
+  // Last resort: show raw
+  return raw;
+}
 
 export default async function BookingsPage({ searchParams }: { searchParams: SearchParams }) {
   const Booking = await BookingModel();
@@ -317,16 +345,19 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
     : rows.filter((r) => r.courtId === courtIdFilter);
 
   filteredRows.sort((a, b) => {
-    const da = parseDateValue(a.date);
-    const db = parseDateValue(b.date);
-    if (da !== db) return da - db;
+  const da = parseDateValue(a.date);
+  const db = parseDateValue(b.date);
+  // ✅ Newest date first
+  if (da !== db) return db - da;
 
-    const ta = toMinutes(a.start);
-    const tb = toMinutes(b.start);
-    if (ta !== tb) return ta - tb;
+  const ta = toMinutes(a.start);
+  const tb = toMinutes(b.start);
+  // ✅ Later time first within the same day
+  if (ta !== tb) return tb - ta;
 
-    return b.createdAt - a.createdAt;
-  });
+  // ✅ Most recently created first if date & time are same
+  return b.createdAt - a.createdAt;
+});
 
   /** ---------------------------------------
    * UI Rendering
@@ -477,7 +508,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
                   <tr key={`${r.bookingId}-${idx}`}>
                     <td>{r.userName}</td>
                     <td>{r.userPhone}</td>
-                    <td>{r.date}</td>
+                    <td>{formatDisplayDate(r.date)}</td>
                     <td>{paymentBadge(r.adminPaid, r.paymentRef)}</td>
                     <td>{amountDisplay(r.amount, r.currency)}</td>
                     <td>{r.courtId ?? "—"}</td>
@@ -508,7 +539,7 @@ export default async function BookingsPage({ searchParams }: { searchParams: Sea
                   <td colSpan={11} style={{ textAlign: "center", padding: "18px" }}>
                     No bookings found
                     {q ? ` for “${q}”` : ""}
-                    {dateFilter ? ` on ${dateFilter}` : ""}
+                    {dateFilter ? ` on ${formatDisplayDate(dateFilter)}` : ""}
                     {courtIdFilter != null ? ` for Court ${courtIdFilter}` : ""}.
                   </td>
                 </tr>

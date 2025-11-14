@@ -18,6 +18,12 @@ type GuestQuery = {
 
 export async function POST(req: Request) {
   try {
+    // 🔐 Password check (must match what we used on the client)
+    const pwd = req.headers.get("x-admin-password");
+    if (pwd !== "Sannrocks2025") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get("q") || "").trim();
     const date = (searchParams.get("date") || "").trim();

@@ -44,7 +44,7 @@ async function getSheets() {
  * Headers & general helpers
  * ──────────────────────────────────────────────────────────────────── */
 
-// Existing header for your main bookings tab (A..K = 11 cols)
+// Main header for bookings tab (A..L = 12 cols)
 const HEADER = [
   "User Name",
   "Phone",
@@ -57,6 +57,7 @@ const HEADER = [
   "Type",
   "Who",
   "Actions",
+  "Booking ID", // ⬅️ We will store orderId here
 ];
 
 // Cancellation header for Sheet 2 (audit-friendly) (A..P = 16 cols)
@@ -212,7 +213,7 @@ async function getOrCreateSecondTabSheetId(): Promise<number> {
 }
 
 /** ──────────────────────────────────────────────────────────────────────
- * Public API — Bookings append
+ * Public API — Bookings append & update
  * ──────────────────────────────────────────────────────────────────── */
 
 /** Display like your table badge (re-usable across routes) */
@@ -229,8 +230,9 @@ function formatPayment(paymentRef?: string, adminPaid?: boolean): string {
 
 /**
  * Build one row per slot in the shape:
- * User Name | Phone | Date | Payment | Amount | Court ID | Start | End | Type | Who | Actions
+ * User Name | Phone | Date | Payment | Amount | Court ID | Start | End | Type | Who | Actions | Booking ID
  * - amount is per-slot (like your UI table)
+ * - Booking ID column will store orderId (unique per booking)
  */
 export function bookingToRows(input: {
   userName: string;
@@ -242,6 +244,7 @@ export function bookingToRows(input: {
   slots: { courtId: number; start: string; end: string }[];
   bookingType: "Normal" | "Special" | "Individual";
   who: "member" | "user" | "guest";
+  bookingId?: string; // ⬅️ We pass orderId here
 }) {
   const perSlot =
     typeof input.totalAmount === "number" && input.slots.length > 0
@@ -262,6 +265,7 @@ export function bookingToRows(input: {
     input.bookingType,                    // Type
     input.who,                            // Who
     "",                                   // Actions (blank)
+    input.bookingId || "",                // Booking ID (orderId)
   ]);
 
   // If somehow no slots were passed, still push a single summary row
@@ -278,13 +282,14 @@ export function bookingToRows(input: {
       input.bookingType,
       input.who,
       "",
+      input.bookingId || "",
     ]);
   }
 
   return rows;
 }
 
-/** Append rows under header. Each row must have 11 columns (A..K). */
+/** Append rows under header. Each row must have HEADER.length columns (A..L). */
 export async function appendRows(rows: (string | number | null | undefined)[][]) {
   if (!rows?.length) return;
 
@@ -312,6 +317,64 @@ export async function appendRows(rows: (string | number | null | undefined)[][])
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: fixed },
+  });
+}
+
+/**
+ * Update the Payment cell for a given booking key (orderId) in the main bookings tab.
+ * Looks up the row by "Booking ID" column and updates the "Payment" column.
+ */
+export async function updateBookingPaymentById(
+  bookingKey: string,           // we pass orderId here
+  paymentRef?: string,
+  adminPaid?: boolean
+) {
+  if (!bookingKey) return;
+
+  await ensureMainHeader();
+
+  const sheets = await getSheets();
+  const spreadsheetId = SHEET_ID();
+  const sheetName = TAB_NAME();
+
+  // Locate columns
+  const bookingIdColIndex = HEADER.indexOf("Booking ID") + 1; // 1-based
+  const paymentColIndex = HEADER.indexOf("Payment") + 1;      // 1-based
+
+  if (bookingIdColIndex <= 0 || paymentColIndex <= 0) return;
+
+  const bookingIdColLetter = toA1Col(bookingIdColIndex);
+  const paymentColLetter = toA1Col(paymentColIndex);
+
+  // Read full Booking ID column
+  const read = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${sheetName}!${bookingIdColLetter}:${bookingIdColLetter}`,
+  });
+
+  const values = read.data.values || [];
+  let rowIndex = -1;
+
+  // Row 1 is header, so start from 1
+  for (let i = 1; i < values.length; i++) {
+    const cellVal = (values[i]?.[0] || "").toString().trim();
+    if (cellVal === bookingKey) {
+      rowIndex = i + 1; // 1-based
+      break;
+    }
+  }
+
+  // If not found, nothing to update
+  if (rowIndex === -1) return;
+
+  const pay = formatPayment(paymentRef, adminPaid);
+  const range = `${sheetName}!${paymentColLetter}${rowIndex}`;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[pay]] },
   });
 }
 

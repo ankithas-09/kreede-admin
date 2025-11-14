@@ -103,12 +103,6 @@ export async function POST(req: Request) {
     // ---- billing ----
     const slotsCount = Math.max(1, slots.length);
 
-    // Compute non-member pricing:
-    // 1) If offer present:
-    //    - Use offerTotal if provided
-    //    - Else use offerUnitPrice * slotsCount
-    //    - Else fallback to your existing modes
-    // 2) Members always 0
     function computeNonMemberTotal(): number {
       // Offer branch
       if (isOffer) {
@@ -245,9 +239,6 @@ export async function POST(req: Request) {
           // ⬇️ NEW metadata
           bookingType,
           who: whoField,
-
-          // If you add fields to the GuestBooking schema later, you can also persist:
-          // offerId, offerName, offerConditionKeys
         });
 
         // ---- Google Sheets append (guest) ----
@@ -262,6 +253,7 @@ export async function POST(req: Request) {
             slots: slots || [],
             bookingType,
             who: whoField,
+            bookingId: orderId, // ⬅️ store orderId in "Booking ID" column
           });
           await appendRows(rows);
         } catch (sheetErr) {
@@ -287,9 +279,6 @@ export async function POST(req: Request) {
         // ⬇️ NEW metadata
         bookingType,
         who: whoField,
-
-        // If you add fields to the Booking schema later, persist:
-        // offerId, offerName, offerConditionKeys
       });
 
       // ---- Google Sheets append (member/user) ----
@@ -304,6 +293,7 @@ export async function POST(req: Request) {
           slots: slots || [],
           bookingType,
           who: whoField,
+          bookingId: orderId, // ⬅️ store orderId here
         });
         await appendRows(rows);
       } catch (sheetErr) {

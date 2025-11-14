@@ -2,9 +2,11 @@
 import { NextResponse } from "next/server";
 import { BookingModel } from "@/models/Booking";
 import { GuestBookingModel } from "@/models/GuestBooking";
+import { updateBookingPaymentById } from "@/lib/googleSheets";
 
 type PaidDoc = {
   _id: string;
+  orderId?: string;
   adminPaid?: boolean;
   paymentRef?: string;
 };
@@ -42,26 +44,36 @@ export async function PATCH(
     {
       const Booking = await BookingModel();
       const found = await Booking.findById(id)
-        .select({ _id: 1, adminPaid: 1, paymentRef: 1 })
+        .select({ _id: 1, orderId: 1, adminPaid: 1, paymentRef: 1 })
         .lean<PaidDoc | null>();
 
       if (found) {
+        const refUpper = String(found.paymentRef || "").toUpperCase();
         const alreadyPaid =
           found.adminPaid === true ||
-          String(found.paymentRef || "").toUpperCase().startsWith("PAID.") ||
-          String(found.paymentRef || "").toUpperCase() === "MEMBERSHIP";
+          refUpper.startsWith("PAID.") ||
+          refUpper === "MEMBERSHIP";
 
         if (alreadyPaid) {
           // Idempotent success
           return NextResponse.json({ ok: true, already: true, source: "bookings" });
         }
 
-        const nextRef = toPaidRef(found.paymentRef);
+        const nextRef = toPaidRef(found.paymentRef) || "PAID.CASH";
 
         await Booking.updateOne(
           { _id: id },
-          { $set: { adminPaid: true, ...(nextRef ? { paymentRef: nextRef } : {}) } }
+          { $set: { adminPaid: true, paymentRef: nextRef } }
         );
+
+        // 🔹 Update payment in Google Sheets using orderId as key
+        try {
+          if (found.orderId) {
+            await updateBookingPaymentById(found.orderId, nextRef, true);
+          }
+        } catch (sheetErr) {
+          console.error("Sheets update (mark-paid booking) failed:", sheetErr);
+        }
 
         return NextResponse.json({ ok: true, source: "bookings" });
       }
@@ -71,13 +83,13 @@ export async function PATCH(
     {
       const GuestBooking = await GuestBookingModel();
       const foundGuest = await GuestBooking.findById(id)
-        .select({ _id: 1, adminPaid: 1, paymentRef: 1 })
+        .select({ _id: 1, orderId: 1, adminPaid: 1, paymentRef: 1 })
         .lean<PaidDoc | null>();
 
       if (foundGuest) {
-        const ref = String(foundGuest.paymentRef || "").toUpperCase();
+        const refUpper = String(foundGuest.paymentRef || "").toUpperCase();
         const alreadyPaid =
-          foundGuest.adminPaid === true || ref.startsWith("PAID.");
+          foundGuest.adminPaid === true || refUpper.startsWith("PAID.");
 
         if (alreadyPaid) {
           // Idempotent success
@@ -91,6 +103,15 @@ export async function PATCH(
           { _id: id },
           { $set: { adminPaid: true, paymentRef: nextRef } }
         );
+
+        // 🔹 Update payment in Google Sheets using orderId as key
+        try {
+          if (foundGuest.orderId) {
+            await updateBookingPaymentById(foundGuest.orderId, nextRef, true);
+          }
+        } catch (sheetErr) {
+          console.error("Sheets update (mark-paid guest) failed:", sheetErr);
+        }
 
         return NextResponse.json({ ok: true, source: "guest_bookings" });
       }

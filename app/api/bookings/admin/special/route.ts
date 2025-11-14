@@ -163,6 +163,7 @@ export async function POST(req: Request) {
           slots: normalizedSlots,
           bookingType: "Special",
           who: "guest",
+          bookingId: orderId, // ⬅️ store orderId
         });
         await appendRows(rows);
       } catch (sheetErr) {
@@ -219,6 +220,7 @@ export async function POST(req: Request) {
         slots: normalizedSlots,
         bookingType: "Special",
         who: isMember ? "member" : "user",
+        bookingId: orderId, // ⬅️ store orderId
       });
       await appendRows(rows);
     } catch (sheetErr) {

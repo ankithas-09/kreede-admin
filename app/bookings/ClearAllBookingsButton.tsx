@@ -8,6 +8,18 @@ export default function ClearAllBookingsButton({ q, date }: { q?: string; date?:
   const hasFilter = Boolean((q || "").trim() || (date || "").trim());
 
   async function onClick() {
+    if (loading) return;
+
+    // 🔐 Step 1: Ask for admin password
+    const entered = window.prompt("Enter admin password to clear bookings:");
+    if (entered === null) return; // user cancelled
+
+    if (entered !== "Sannrocks2025") {
+      alert("Incorrect password. Clear action cancelled.");
+      return;
+    }
+
+    // 🔁 Step 2: Existing confirmation message
     const scopeText = hasFilter
       ? `ALL bookings that match the current filters${q ? ` (q="${q}")` : ""}${date ? ` (date=${date})` : ""}`
       : "ALL bookings (no filters)";
@@ -26,9 +38,15 @@ export default function ClearAllBookingsButton({ q, date }: { q?: string; date?:
       if (q) params.set("q", q);
       if (date) params.set("date", date);
 
-      const res = await fetch(`/api/bookings/clear${params.toString() ? `?${params.toString()}` : ""}`, {
-        method: "POST",
-      });
+      const res = await fetch(
+        `/api/bookings/clear${params.toString() ? `?${params.toString()}` : ""}`,
+        {
+          method: "POST",
+          headers: {
+            "x-admin-password": entered, // 🔐 send password to API
+          },
+        }
+      );
 
       const j: unknown = await res.json().catch(() => ({}));
       if (!res.ok) {
