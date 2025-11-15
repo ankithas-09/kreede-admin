@@ -103,6 +103,10 @@ export async function POST(req: Request) {
     // ---- billing ----
     const slotsCount = Math.max(1, slots.length);
 
+    // 🔹 NEW: compute weekend flag once for pricing
+    const dow = getUTCDayFromYMD(dateStr);
+    const isWeekend = !Number.isNaN(dow) && (dow === 0 || dow === 6); // Sat/Sun
+
     function computeNonMemberTotal(): number {
       // Offer branch
       if (isOffer) {
@@ -118,10 +122,11 @@ export async function POST(req: Request) {
       // Fallback to normal modes
       const perSlot =
         pricingMode === "individual"
-          ? 150
+          ? (isWeekend ? 200 : 150)          // ✅ 200 on Sat/Sun, 150 on weekdays
           : pricingMode === "individual2"
-            ? 300
-            : getCourtSlotPrice(dateStr);
+            ? (isWeekend ? 400 : 300)        // ✅ 400 on Sat/Sun, 300 on weekdays
+            : getCourtSlotPrice(dateStr);    // court pricing
+
       return Math.max(0, Math.round(perSlot * slotsCount));
     }
 

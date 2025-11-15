@@ -7,7 +7,7 @@ type UserLite = { _id: string; userId?: string; name?: string; email?: string; p
 type Availability = Record<number, { start: string; end: string }[]>;
 type Slot = { courtId: number; start: string; end: string };
 type Who = "member" | "user" | "guest";
-type PricingMode = "court" | "individual" | "individual2"; // ⬅️ NEW
+type PricingMode = "court" | "individual" | "individual2";
 
 type AdminBookingBody = {
   type: Who;
@@ -15,7 +15,7 @@ type AdminBookingBody = {
   slots: Slot[];
   markPaid: boolean;
   paymentRef?: string;
-  pricingMode?: PricingMode; // ⬅️ NEW
+  pricingMode?: PricingMode;
 
   userEmail?: string;
   userName?: string;
@@ -63,7 +63,7 @@ export default function AddBookingButton() {
   // who
   const [who, setWho] = useState<Who>("member");
 
-  // ⬇️ NEW: pricing mode
+  // pricing mode
   const [pricingMode, setPricingMode] = useState<PricingMode>("court");
 
   // date
@@ -196,15 +196,23 @@ export default function AddBookingButton() {
 
   const totalSlots = selected.length;
 
-  // ⬇️ UPDATED: pricing depends on mode
+  // Compute day + weekend once and reuse
+  const day = dayLabel(date);
+  const weekend = (() => {
+    if (!date) return false;
+    const dow = getUTCDayFromYMD(date);
+    return dow === 0 || dow === 6; // Sunday or Saturday
+  })();
+
+  // UPDATED: pricing depends on mode + weekend
   const effectivePerSlot =
     who === "member"
       ? 0
-      : (pricingMode === "individual"
-          ? 150
-          : pricingMode === "individual2"
-            ? 300
-            : pricePerSlotCourt(date));
+      : pricingMode === "individual"
+        ? (weekend ? 200 : 150)          // 200 on Sat/Sun, 150 on weekdays
+        : pricingMode === "individual2"
+          ? (weekend ? 400 : 300)        // 400 on Sat/Sun, 300 on weekdays
+          : pricePerSlotCourt(date);     // existing court pricing
 
   const totalAmount = who === "member" ? 0 : totalSlots * effectivePerSlot;
 
@@ -250,7 +258,7 @@ export default function AddBookingButton() {
         date,
         slots: selected,
         markPaid,
-        pricingMode, // ⬅️ send to backend
+        pricingMode,
       };
 
       if (who === "member") {
@@ -288,13 +296,6 @@ export default function AddBookingButton() {
       setSaving(false);
     }
   }
-
-  const day = dayLabel(date);
-  const weekend = (() => {
-    if (!date) return false;
-    const dow = getUTCDayFromYMD(date);
-    return dow === 0 || dow === 6;
-  })();
 
   return (
     <>
@@ -379,10 +380,10 @@ export default function AddBookingButton() {
                           </>
                         )}
                         {pricingMode === "individual" && (
-                          <> • <b>₹150/slot</b></>
+                          <> • <b>₹{weekend ? 200 : 150}/slot</b></>
                         )}
                         {pricingMode === "individual2" && (
-                          <> • <b>₹300/slot</b></>
+                          <> • <b>₹{weekend ? 400 : 300}/slot</b></>
                         )}
                       </div>
                     )}
@@ -395,8 +396,12 @@ export default function AddBookingButton() {
                       onChange={(e) => setPricingMode(e.target.value as PricingMode)}
                     >
                       <option value="court">Court</option>
-                      <option value="individual">Individual (₹150/slot)</option>
-                      <option value="individual2">Individuals (2) (₹300/slot)</option>
+                      <option value="individual">
+                        Individual (₹150 weekday / ₹200 weekend)
+                      </option>
+                      <option value="individual2">
+                        Individuals (2) (₹300 weekday / ₹400 weekend)
+                      </option>
                     </select>
                   </div>
                 </div>
